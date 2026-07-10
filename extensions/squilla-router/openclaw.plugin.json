@@ -1,0 +1,39 @@
+{
+  "id": "squilla-router",
+  "activation": {
+    "onStartup": true
+  },
+  "name": "SquillaRouter",
+  "description": "Routes each turn to a configured model tier using OpenSquilla heuristics.",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "$defs": {
+      "tierTarget": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["model"],
+        "properties": {
+          "model": { "type": "string" },
+          "provider": { "type": "string" }
+        }
+      }
+    },
+    "properties": {
+      "defaultTier": {
+        "type": "string",
+        "enum": ["c0", "c1", "c2", "c3"]
+      },
+      "tiers": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "c0": { "$ref": "#/$defs/tierTarget" },
+          "c1": { "$ref": "#/$defs/tierTarget" },
+          "c2": { "$ref": "#/$defs/tierTarget" },
+          "c3": { "$ref": "#/$defs/tierTarget" }
+        }
+      }
+    }
+  }
+}

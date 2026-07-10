@@ -331,6 +331,10 @@
   - changed-files:
       - any-glob-to-any-file:
           - "extensions/open-prose/**"
+"extensions: squilla-router":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "extensions/squilla-router/**"
 "extensions: tokenjuice":
   - changed-files:
       - any-glob-to-any-file:
