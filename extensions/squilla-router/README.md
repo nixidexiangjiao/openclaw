@@ -24,6 +24,11 @@ Sources ported (thresholds and keyword lists kept equivalent):
 3. Image turns are never overridden — the session's configured model stays.
 4. Unconfigured tiers resolve to the nearest configured tier, preferring
    equal-or-higher so a missing tier never silently downgrades a turn.
+5. KV-cache-aware sticky routing (on by default): on a short continuation turn,
+   never route below the tier the session was already on. Switching to a cheaper
+   model would drop the provider-side prompt cache and re-pay the whole context
+   uncached, which usually costs more than the per-token saving. Upgrades are
+   still allowed — a genuinely harder turn is worth the cache miss.
 
 ## Configuration
 
@@ -40,7 +45,8 @@ Sources ported (thresholds and keyword lists kept equivalent):
             "c1": { "model": "deepseek/deepseek-v4-pro" },
             "c2": { "model": "z-ai/glm-5.2" },
             "c3": { "model": "z-ai/glm-5.2" }
-          }
+          },
+          "sticky": { "enabled": true, "maxUserLen": 200 }
         }
       }
     }
@@ -50,3 +56,12 @@ Sources ported (thresholds and keyword lists kept equivalent):
 
 Tiers without a `model` are skipped. If no tier is usable the plugin logs a
 warning and disables itself for the session.
+
+`sticky` controls KV-cache-aware downgrade blocking (defaults shown above):
+
+- `enabled` — set `false` to route every turn purely by classification,
+  ignoring the warm cache. Leave `true` unless you have no provider-side prompt
+  caching to protect.
+- `maxUserLen` — a turn whose prompt is at most this many characters counts as a
+  "continuation" and cannot downgrade below the session's current tier. Longer
+  turns are treated as genuinely new work and may re-route freely.

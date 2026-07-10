@@ -33,6 +33,14 @@
           "c2": { "$ref": "#/$defs/tierTarget" },
           "c3": { "$ref": "#/$defs/tierTarget" }
         }
+      },
+      "sticky": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": { "type": "boolean" },
+          "maxUserLen": { "type": "integer", "minimum": 0 }
+        }
       }
     }
   }

@@ -32,7 +32,7 @@ SquillaRouter 的**无依赖规则子集**（不含 ML 模型），把每一轮�
   │
   ├─④ flag 升级     ── flag 命中则把 tier 往上抬（只升不降）
   │
-  └─⑤ 落地解析      ── 置信度门 + 就近取配置档位 → 返回 modelOverride / providerOverride
+  └─⑤ 落地解析      ── 置信度门 + 就近取配置档位 + KV-cache 粘滞 → 返回 modelOverride / providerOverride
 ```
 
 对应的函数调用链：
@@ -43,9 +43,16 @@ index.ts  before_model_resolve 回调
       → classifyBand()        // ②
       → computeFlags()        // ③
       → applyFlagUpgrades()   // ④
+  → SessionTierStore.get()    // 读上一轮服务的档位（粘滞用）
   → resolveRoute()            // router.ts：⑤
       → nearestConfiguredTier()
+      → applySticky()         // ⑤ 的 KV-cache 粘滞
+  → SessionTierStore.set()    // 记录本轮服务的档位
 ```
+
+会话状态（`session-store.ts`）：`SessionTierStore` 是有界的 per-session
+内存表，记录每个会话上一轮**实际服务的档位**，TTL 30 分钟、按容量 LRU 淘汰。丢失
+一条只是让下一轮自由重路由（安全，无用户可见数据）。
 
 档位命名：`c0`（最便宜/最快）→ `c1` → `c2` → `c3`（最强）。对应 OpenSquilla 的
 路由类 `R0`–`R3`。
@@ -163,7 +170,7 @@ return TEXT_TIERS[idx];
 
 ## 阶段 ⑤ 落地解析（`resolveRoute`）
 
-拿到 `decision` 后做两件事：置信度门、就近取配置档位。
+拿到 `decision` 后做三件事：置信度门、就近取配置档位、KV-cache 粘滞。
 
 ### 5.1 置信度门
 
@@ -195,7 +202,42 @@ const gatedTier =
 
 如果一个 model 都没配置，返回 `undefined`，插件不做覆盖。
 
-### 5.3 返回覆盖
+### 5.3 KV-cache 粘滞（`applySticky`，重点）
+
+**这是成本能不能真降下来的关键。** provider 端的 prompt cache 缓存的是对话前缀；
+一旦本轮换了模型，新模型缓存全冷，会把整段历史当作**未缓存**输入重新计费。未缓存
+输入通常是缓存命中价的数倍——所以每轮乱切模型，"路由到便宜模型"省下的单价，很可能
+被"丢缓存重付全上下文"吃掉甚至倒亏。粘滞就是为此存在。
+
+规则（对齐 OpenSquilla `predictor.py` 的 `_apply_sticky_tier`）：
+
+```ts
+const isContinuation = ctx.promptLen <= sticky.maxUserLen; // 短延续轮次
+const isDowngrade = index(ctx.lastTier) > index(desiredTier); // 想往下降
+if (isContinuation && isDowngrade) {
+  return { tier: ctx.lastTier, stuck: true }; // 保持上一轮档位，护住热缓存
+}
+return { tier: desiredTier, stuck: false };
+```
+
+三个要点：
+
+1. **只拦降级，不拦升级**。降级换便宜模型：省的单价抵不过丢缓存，拦。升级换强模型：
+   难轮次确实需要更强能力，这次缓存代价值得付，放行。
+2. **只在短延续轮次生效**（`promptLen ≤ maxUserLen`，默认 200 字符）。一句"继续"
+   "好的接着改"是同一任务的延续，要留在热模型上；而一条长的新消息是真正的新工作，
+   重路由（连带吃一次缓存 miss）是合理的。
+3. **在"已解析档位"空间比较**。`lastTier`（上一轮实际服务的档位，一定是已配置档）
+   和 `desiredTier`（本轮就近解析后的档，也一定已配置）都在同一空间，所以粘滞结果
+   永远是已配置档，无需二次解析。
+
+粘滞与置信度门是两套独立的"防抖"：门防的是**低置信瞎猜**，粘滞防的是**丢缓存**。
+一句短的高风险轮次（"删库跑路"）仍会照常升级——粘滞不拦升级，缓存代价该付就付。
+
+工程上，`lastTier` 来自 `SessionTierStore`（阶段 ⑤ 结束后 `set` 记录本轮
+`resolvedTier`）。没有 session key 或首轮无历史时，粘滞不生效，按纯分类走。
+
+### 5.4 返回覆盖
 
 ```ts
 return {
@@ -216,7 +258,13 @@ core 在 `src/agents/embedded-agent-runner/run/setup.ts` 消费这个返回值�
 
 - `tiers.{c0..c3}.model` —— 必填字符串（空白串视为未配置，跳过）；`provider` 可选。
 - `defaultTier` —— 取值 `c0..c3`，非法或缺省时回落 `c1`。
+- `sticky.enabled` —— KV-cache 粘滞开关，默认 **true**；`sticky.maxUserLen` ——
+  延续轮次的字符上限，默认 200。
 - 如果一个可用档位都没有，返回 `undefined`，插件打 warn 并对本会话禁用路由。
+
+> 关于粘滞默认开：OpenSquilla 出厂是**默认关**的，原因是它的 ML 头可能误报上一轮
+> 路由。本插件记录的是自己实际服务的确切档位，不存在这个准确性问题，所以默认打开——
+> 而且用户明确关心缓存成本，默认开更符合预期。
 
 配置是进程生命周期内固定的，改配置需要重启 gateway。
 
@@ -242,8 +290,8 @@ core 在 `src/agents/embedded-agent-runner/run/setup.ts` 消费这个返回值�
 
 - **ML 分类**：BGE 语义嵌入 + LightGBM/MLP 集成（完整版靠它，规则层只是兜底）。
 - **提示词策略 P0/P2**：注入 `[RESPONSE_POLICY: ...]` 提示、思考档位控制。
-- **会话内路由历史**：反降级、KV-cache 粘滞档位、深对话下限——都需要 per-session
-  状态，本 PoC 每轮独立决策。
+- **更完整的会话内历史信号**：深对话下限、基于 usage 的延续特征、多轮 margin 轨迹。
+  本 PoC 的 per-session 状态只保留了最关键的 **KV-cache 粘滞**（阶段 ⑤.3，已实现）。
 - **自学习飞轮**：特征捕获 + 离线重训。
 
 这些能力对应"方案 2"（把完整 ML 管线以 sidecar 接入）；插件侧的接缝

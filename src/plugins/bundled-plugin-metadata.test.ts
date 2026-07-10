@@ -52,6 +52,7 @@ const EXPECTED_BUNDLED_STARTUP_PLUGIN_IDS = [
   "openshell",
   "phone-control",
   "policy",
+  "squilla-router",
   "talk-voice",
   "thread-ownership",
   "voice-call",

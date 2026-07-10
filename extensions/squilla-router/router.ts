@@ -41,10 +41,28 @@ export type TierTarget = {
   provider?: string;
 };
 
+// KV-cache-aware sticky routing. Switching models mid-session throws away the
+// provider-side prompt cache, so a "cheaper" tier can cost MORE (re-paying the
+// whole context uncached). Mirrors OpenSquilla predictor.py _apply_sticky_tier:
+// block downgrades on short continuation turns; allow upgrades (a hard turn is
+// worth the cache miss).
+export type StickyConfig = {
+  enabled: boolean;
+  maxUserLen: number;
+};
+
 export type SquillaRouterConfig = {
   tiers: Partial<Record<Tier, TierTarget>>;
   defaultTier: Tier;
+  sticky: StickyConfig;
 };
+
+// Default matches OpenSquilla's sticky_tier.max_user_len. Enabled by default
+// here (unlike OpenSquilla's shipped default-off): OpenSquilla gated it off
+// because its ML head could mis-report the previous route; this plugin records
+// the exact tier it served, so the prev-route accuracy concern does not apply.
+const STICKY_DEFAULT_ENABLED = true;
+const STICKY_DEFAULT_MAX_USER_LEN = 200;
 
 // Band thresholds (opensquilla engine/routing/heuristic.py).
 const HEAVY_MIN_CHARS = 12_000;
@@ -218,11 +236,42 @@ function nearestConfiguredTier(tier: Tier, tiers: SquillaRouterConfig["tiers"]):
   return undefined;
 }
 
-export type ResolvedRoute = RouteDecision & { resolvedTier: Tier; target: TierTarget };
+export type ResolvedRoute = RouteDecision & {
+  /** Final tier after the confidence gate, config resolution, and sticky. */
+  resolvedTier: Tier;
+  target: TierTarget;
+  /** Resolved tier the classifier wanted before sticky held it back. */
+  desiredTier: Tier;
+  /** True when sticky blocked a downgrade to preserve the warm cache. */
+  stuck: boolean;
+};
+
+/** Prior turn's served tier for one session — the sticky comparison basis. */
+export type StickyContext = { lastTier: Tier; promptLen: number };
+
+// OpenSquilla _apply_sticky_tier: on a short continuation turn, never route
+// below the previous turn's tier. Only downgrades are blocked — an upgrade
+// busts the cache too but the turn genuinely needs the stronger model.
+function applySticky(
+  desiredTier: Tier,
+  sticky: StickyConfig,
+  ctx: StickyContext | undefined,
+): { tier: Tier; stuck: boolean } {
+  if (!sticky.enabled || !ctx) {
+    return { tier: desiredTier, stuck: false };
+  }
+  const isContinuation = ctx.promptLen <= sticky.maxUserLen;
+  const isDowngrade = TEXT_TIERS.indexOf(ctx.lastTier) > TEXT_TIERS.indexOf(desiredTier);
+  if (isContinuation && isDowngrade) {
+    return { tier: ctx.lastTier, stuck: true };
+  }
+  return { tier: desiredTier, stuck: false };
+}
 
 export function resolveRoute(
   config: SquillaRouterConfig,
   decision: RouteDecision,
+  sticky?: StickyContext,
 ): ResolvedRoute | undefined {
   // Borderline confidence sits below OpenSquilla's confidence gate, which
   // flattens the classified tier back to the operator's default tier; a flag
@@ -231,15 +280,19 @@ export function resolveRoute(
     decision.band === "borderline_plain" && !decision.flagUpgraded
       ? config.defaultTier
       : decision.tier;
-  const resolvedTier = nearestConfiguredTier(gatedTier, config.tiers);
-  if (!resolvedTier) {
+  const desiredTier = nearestConfiguredTier(gatedTier, config.tiers);
+  if (!desiredTier) {
     return undefined;
   }
+  // Sticky runs in resolved-tier space: both operands are configured tiers
+  // (lastTier was served before, desiredTier just resolved), so the sticky
+  // result is always a configured tier and needs no re-resolution.
+  const { tier: resolvedTier, stuck } = applySticky(desiredTier, config.sticky, sticky);
   const target = config.tiers[resolvedTier];
   if (!target) {
     return undefined;
   }
-  return { ...decision, resolvedTier, target };
+  return { ...decision, resolvedTier, target, desiredTier, stuck };
 }
 
 function parseTierTarget(value: unknown): TierTarget | undefined {
@@ -276,5 +329,17 @@ export function parseRouterConfig(
     typeof rawDefault === "string" && (TEXT_TIERS as readonly string[]).includes(rawDefault)
       ? (rawDefault as Tier)
       : "c1";
-  return { tiers, defaultTier };
+  return { tiers, defaultTier, sticky: parseStickyConfig(pluginConfig?.sticky) };
+}
+
+function parseStickyConfig(raw: unknown): StickyConfig {
+  const record = typeof raw === "object" && raw !== null ? (raw as Record<string, unknown>) : {};
+  const enabled = typeof record.enabled === "boolean" ? record.enabled : STICKY_DEFAULT_ENABLED;
+  const maxUserLen =
+    typeof record.maxUserLen === "number" &&
+    Number.isFinite(record.maxUserLen) &&
+    record.maxUserLen >= 0
+      ? Math.floor(record.maxUserLen)
+      : STICKY_DEFAULT_MAX_USER_LEN;
+  return { enabled, maxUserLen };
 }
