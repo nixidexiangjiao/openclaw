@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   classifyTurn,
   computeFlags,
+  mlRouteDecision,
   parseRouterConfig,
   resolveRoute,
   type SquillaRouterConfig,
@@ -200,6 +201,40 @@ describe("sticky routing (KV-cache-aware)", () => {
   });
 });
 
+describe("mlRouteDecision", () => {
+  const mlConfig: SquillaRouterConfig = {
+    ...fullConfig,
+    ml: { url: "http://ml/v1/classify", timeoutMs: 2_000, confidenceThreshold: 0.5 },
+  };
+
+  it("uses the ML tier when confidence clears the gate", () => {
+    const decision = mlRouteDecision({ tier: "c3", routeClass: "R3", confidence: 0.9 }, mlConfig);
+    expect(decision.band).toBe("ml");
+    expect(decision.tier).toBe("c3");
+    expect(decision.routeClass).toBe("R3");
+  });
+
+  it("flattens a low-confidence answer to defaultTier", () => {
+    const decision = mlRouteDecision({ tier: "c3", routeClass: "R3", confidence: 0.3 }, mlConfig);
+    expect(decision.tier).toBe("c1");
+    expect(decision.routeClass).toBe("R1");
+  });
+
+  it("sticky still applies over an ML decision", () => {
+    const stickyConfig: SquillaRouterConfig = {
+      ...mlConfig,
+      sticky: { enabled: true, maxUserLen: 200 },
+    };
+    const decision = mlRouteDecision(
+      { tier: "c0", routeClass: "R0", confidence: 0.95 },
+      stickyConfig,
+    );
+    const route = resolveRoute(stickyConfig, decision, { lastTier: "c2", promptLen: 5 });
+    expect(route?.resolvedTier).toBe("c2");
+    expect(route?.stuck).toBe(true);
+  });
+});
+
 describe("parseRouterConfig", () => {
   it("parses tiers, default, and sticky defaults", () => {
     const config = parseRouterConfig({
@@ -219,6 +254,28 @@ describe("parseRouterConfig", () => {
       sticky: { enabled: false, maxUserLen: 50 },
     });
     expect(config?.sticky).toEqual({ enabled: false, maxUserLen: 50 });
+  });
+
+  it("parses the ml block with defaults and drops it without a url", () => {
+    const withMl = parseRouterConfig({
+      tiers: { c1: { model: "a" } },
+      ml: { url: "http://ml:8701/v1/classify", apiKey: "k" },
+    });
+    expect(withMl?.ml).toEqual({
+      url: "http://ml:8701/v1/classify",
+      apiKey: "k",
+      timeoutMs: 2_000,
+      confidenceThreshold: 0.5,
+    });
+
+    const explicit = parseRouterConfig({
+      tiers: { c1: { model: "a" } },
+      ml: { url: "http://ml", timeoutMs: 800, confidenceThreshold: 0.7 },
+    });
+    expect(explicit?.ml).toMatchObject({ timeoutMs: 800, confidenceThreshold: 0.7 });
+
+    const noUrl = parseRouterConfig({ tiers: { c1: { model: "a" } }, ml: { apiKey: "k" } });
+    expect(noUrl?.ml).toBeUndefined();
   });
 
   it("rejects configs without any usable tier", () => {

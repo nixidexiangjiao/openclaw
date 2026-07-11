@@ -17,14 +17,19 @@ SquillaRouter 的**无依赖规则子集**（不含 ML 模型），把每一轮�
 
 ---
 
-## 总览：一次路由的五个阶段
+## 总览：一次路由的流程
 
-每一轮 agent 运行前，`before_model_resolve` 钩子触发，走完下面五步：
+每一轮 agent 运行前，`before_model_resolve` 钩子触发：
 
 ```
 入口 (prompt, attachments)
   │
   ├─① 图片短路      ── 有图片附件 → 不覆盖，直接返回（保持会话原模型）
+  │
+  ├─⓪ 远程 ML 分类  ── 配置了 ml.url 时：HTTP POST 消息+路由历史到外部
+  │                    SquillaRouter 服务（BGE+LightGBM+MLP 完整管线），
+  │                    成功 → 拿到 tier/置信度，跳过 ②③④；
+  │                    失败/超时 → 走本地启发式 ②③④
   │
   ├─② 分档 band     ── 按长度/代码块/附件把消息归入 5 个 band，得到基础 tier
   │
@@ -39,20 +44,30 @@ SquillaRouter 的**无依赖规则子集**（不含 ML 模型），把每一轮�
 
 ```
 index.ts  before_model_resolve 回调
-  → classifyTurn()            // router.ts：② + ③ + ④
-      → classifyBand()        // ②
-      → computeFlags()        // ③
-      → applyFlagUpgrades()   // ④
-  → SessionTierStore.get()    // 读上一轮服务的档位（粘滞用）
-  → resolveRoute()            // router.ts：⑤
+  → SessionTierStore.get()      // 读上一轮档位 + 路由历史
+  → classifyRemote()            // ml-client.ts：⓪ HTTP 调外部 ML（可选）
+      成功 → mlRouteDecision()  // router.ts：ML 置信度门（低置信 → defaultTier）
+      失败 → classifyTurn()     // router.ts：② + ③ + ④ 本地启发式
+  → resolveRoute()              // router.ts：⑤
       → nearestConfiguredTier()
-      → applySticky()         // ⑤ 的 KV-cache 粘滞
-  → SessionTierStore.set()    // 记录本轮服务的档位
+      → applySticky()           // ⑤ 的 KV-cache 粘滞
+  → SessionTierStore.record()   // 记录本轮档位 + 追加路由历史
 ```
 
 会话状态（`session-store.ts`）：`SessionTierStore` 是有界的 per-session
-内存表，记录每个会话上一轮**实际服务的档位**，TTL 30 分钟、按容量 LRU 淘汰。丢失
-一条只是让下一轮自由重路由（安全，无用户可见数据）。
+内存表，记录每个会话上一轮**实际服务的档位**和最近 5 条路由决策（发给 ML 服务的
+历史上下文——V4 分类器是历史感知的），TTL 30 分钟、按容量 LRU 淘汰。丢失一条只是
+让下一轮自由重路由（安全，无用户可见数据）。
+
+远程 ML（阶段 ⓪，`ml-client.ts` + opensquilla `squilla_router/http_service.py`）：
+
+- 服务端跑完整 V4 管线（BGE 语义嵌入 + LightGBM/MLP 集成 + 规则后处理），部署在
+  有算力的外部机器上；插件侧只发一个 HTTP POST。
+- 降级链与 OpenSquilla 进程内一致：**ML 优先，任何失败（超时/网络/5xx/格式不符）
+  静默回落本地启发式**，路由永不因 ML 服务慢而阻塞（默认 2s 超时）。
+- ML 返回已包含服务端 flag 升级等后处理，插件侧不重复套用 ②③④；只加两层本地
+  防护：置信度门（低于 `confidenceThreshold` 回落 `defaultTier`）和 KV-cache 粘滞。
+- 鉴权：`ml.apiKey` 以 Bearer 头发送，服务端用 `OPENSQUILLA_ROUTER_TOKEN` 校验。
 
 档位命名：`c0`（最便宜/最快）→ `c1` → `c2` → `c3`（最强）。对应 OpenSquilla 的
 路由类 `R0`–`R3`。
@@ -288,11 +303,12 @@ core 在 `src/agents/embedded-agent-runner/run/setup.ts` 消费这个返回值�
 
 本层刻意只移植无依赖的规则子集，以下未包含：
 
-- **ML 分类**：BGE 语义嵌入 + LightGBM/MLP 集成（完整版靠它，规则层只是兜底）。
-- **提示词策略 P0/P2**：注入 `[RESPONSE_POLICY: ...]` 提示、思考档位控制。
-- **更完整的会话内历史信号**：深对话下限、基于 usage 的延续特征、多轮 margin 轨迹。
-  本 PoC 的 per-session 状态只保留了最关键的 **KV-cache 粘滞**（阶段 ⑤.3，已实现）。
-- **自学习飞轮**：特征捕获 + 离线重训。
+- ~~ML 分类~~：**已通过阶段 ⓪ 的远程 HTTP 服务接入**（外部部署，插件侧零 ML 依赖）。
+- **提示词策略 P0/P2**：服务已返回 `thinkingMode`/`promptPolicy`，插件侧尚未消费
+  （需要 `before_prompt_build` 注入，未实现）。
+- **更完整的会话内历史信号**：上一轮助手回复文本/usage 未上送（`before_model_resolve`
+  钩子拿不到），ML 服务的 assistant 通道特征因此缺席；用户轮历史已上送。
+- **自学习飞轮**：特征捕获 + 离线重训（属于服务端 OpenSquilla 的能力，需在服务侧开启）。
 
-这些能力对应"方案 2"（把完整 ML 管线以 sidecar 接入）；插件侧的接缝
-（分类 → 档位 → override）已就位，届时只需把 `classifyTurn` 换成 sidecar 调用。
+ML 服务部署方式见 `README.md` 的 "Deploying the service" 一节；服务端实现在
+opensquilla 仓库 `src/opensquilla/squilla_router/http_service.py`。

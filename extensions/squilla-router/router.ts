@@ -19,6 +19,9 @@ export type HeuristicBand =
   | "medium_plain"
   | "borderline_plain";
 
+/** Where a decision came from: a heuristic band, or the remote ML service. */
+export type RouteBand = HeuristicBand | "ml";
+
 export type RoutingFlags = {
   highRisk: boolean;
   debug: boolean;
@@ -28,7 +31,7 @@ export type RoutingFlags = {
 };
 
 export type RouteDecision = {
-  band: HeuristicBand;
+  band: RouteBand;
   tier: Tier;
   routeClass: RouteClass;
   confidence: number;
@@ -51,11 +54,43 @@ export type StickyConfig = {
   maxUserLen: number;
 };
 
+// Remote ML classification (opensquilla squilla_router/http_service.py).
+// When configured, the plugin asks the external service for the tier and only
+// falls back to the local heuristic on failure — same ML-first/heuristic-backup
+// chain OpenSquilla runs in-process.
+export type MlRouterConfig = {
+  /** Full classify endpoint URL, e.g. http://ml-box:8701/v1/classify */
+  url: string;
+  apiKey?: string;
+  timeoutMs: number;
+  /** Below this confidence the decision flattens to defaultTier (OpenSquilla confidence gate). */
+  confidenceThreshold: number;
+};
+
+export type MlHistoryEntry = {
+  text: string;
+  routeClass: RouteClass;
+  difficulty?: number;
+  margin?: number;
+};
+
+export type MlClassification = {
+  tier: Tier;
+  routeClass: RouteClass;
+  confidence: number;
+  difficulty?: number;
+  margin?: number;
+};
+
 export type SquillaRouterConfig = {
   tiers: Partial<Record<Tier, TierTarget>>;
   defaultTier: Tier;
   sticky: StickyConfig;
+  ml?: MlRouterConfig;
 };
+
+const ML_DEFAULT_TIMEOUT_MS = 2_000;
+const ML_DEFAULT_CONFIDENCE_THRESHOLD = 0.5;
 
 // Default matches OpenSquilla's sticky_tier.max_user_len. Enabled by default
 // here (unlike OpenSquilla's shipped default-off): OpenSquilla gated it off
@@ -219,6 +254,32 @@ export function classifyTurn(message: string, attachmentCount = 0): RouteDecisio
   };
 }
 
+const NO_FLAGS: RoutingFlags = {
+  highRisk: false,
+  debug: false,
+  repoArch: false,
+  strictFormat: false,
+  longContext: false,
+};
+
+// Adapt a remote ML classification into the local decision shape. The service
+// already ran the full server-side post-processing (flag overrides, safety
+// nets), so no flag upgrades re-apply here — only the confidence gate: a
+// low-confidence ML answer flattens to the operator's defaultTier, mirroring
+// OpenSquilla's engine-level confidence gate.
+export function mlRouteDecision(ml: MlClassification, config: SquillaRouterConfig): RouteDecision {
+  const threshold = config.ml?.confidenceThreshold ?? ML_DEFAULT_CONFIDENCE_THRESHOLD;
+  const tier = ml.confidence < threshold ? config.defaultTier : ml.tier;
+  return {
+    band: "ml",
+    tier,
+    routeClass: CLASS_BY_TIER[tier],
+    confidence: ml.confidence,
+    flags: NO_FLAGS,
+    flagUpgraded: false,
+  };
+}
+
 // heuristic.py _nearest_valid_tier: prefer the same tier, then walk up so an
 // unconfigured tier never silently downgrades a turn, then walk down.
 function nearestConfiguredTier(tier: Tier, tiers: SquillaRouterConfig["tiers"]): Tier | undefined {
@@ -329,7 +390,39 @@ export function parseRouterConfig(
     typeof rawDefault === "string" && (TEXT_TIERS as readonly string[]).includes(rawDefault)
       ? (rawDefault as Tier)
       : "c1";
-  return { tiers, defaultTier, sticky: parseStickyConfig(pluginConfig?.sticky) };
+  const ml = parseMlConfig(pluginConfig?.ml);
+  return {
+    tiers,
+    defaultTier,
+    sticky: parseStickyConfig(pluginConfig?.sticky),
+    ...(ml ? { ml } : {}),
+  };
+}
+
+function parseMlConfig(raw: unknown): MlRouterConfig | undefined {
+  if (typeof raw !== "object" || raw === null) {
+    return undefined;
+  }
+  const record = raw as Record<string, unknown>;
+  const url = typeof record.url === "string" ? record.url.trim() : "";
+  if (!url) {
+    return undefined;
+  }
+  const apiKey = typeof record.apiKey === "string" && record.apiKey ? record.apiKey : undefined;
+  const timeoutMs =
+    typeof record.timeoutMs === "number" &&
+    Number.isFinite(record.timeoutMs) &&
+    record.timeoutMs > 0
+      ? Math.floor(record.timeoutMs)
+      : ML_DEFAULT_TIMEOUT_MS;
+  const confidenceThreshold =
+    typeof record.confidenceThreshold === "number" &&
+    Number.isFinite(record.confidenceThreshold) &&
+    record.confidenceThreshold >= 0 &&
+    record.confidenceThreshold <= 1
+      ? record.confidenceThreshold
+      : ML_DEFAULT_CONFIDENCE_THRESHOLD;
+  return { url, ...(apiKey ? { apiKey } : {}), timeoutMs, confidenceThreshold };
 }
 
 function parseStickyConfig(raw: unknown): StickyConfig {
