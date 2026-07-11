@@ -26,9 +26,10 @@ SquillaRouter 的**无依赖规则子集**（不含 ML 模型），把每一轮�
   │
   ├─① 图片短路      ── 有图片附件 → 不覆盖，直接返回（保持会话原模型）
   │
-  ├─⓪ 远程 ML 分类  ── 配置了 ml.url 时：HTTP POST 消息+路由历史到外部
-  │                    SquillaRouter 服务（BGE+LightGBM+MLP 完整管线），
-  │                    成功 → 拿到 tier/置信度，跳过 ②③④；
+  ├─⓪ 语义分类      ── 配置了 ml.url 时：HTTP 调外部 embedding 模型服务拿消息
+  │                    向量（OpenAI 兼容 /v1/embeddings，模型独立部署），
+  │                    插件内做锚点相似度分类 + margin 升级 + 欠路由安全网；
+  │                    成功 → 得到 tier/置信度，跳过 ②（③④ 仍然叠加）；
   │                    失败/超时 → 走本地启发式 ②③④
   │
   ├─② 分档 band     ── 按长度/代码块/附件把消息归入 5 个 band，得到基础 tier
@@ -44,30 +45,40 @@ SquillaRouter 的**无依赖规则子集**（不含 ML 模型），把每一轮�
 
 ```
 index.ts  before_model_resolve 回调
-  → SessionTierStore.get()      // 读上一轮档位 + 路由历史
-  → classifyRemote()            // ml-client.ts：⓪ HTTP 调外部 ML（可选）
-      成功 → mlRouteDecision()  // router.ts：ML 置信度门（低置信 → defaultTier）
-      失败 → classifyTurn()     // router.ts：② + ③ + ④ 本地启发式
-  → resolveRoute()              // router.ts：⑤
+  → AnchorCache.get()            // 锚点向量，每进程只 embed 一次（首轮批量调一次）
+  → embedTexts()                 // embeddings-client.ts：⓪ HTTP 拿消息向量（可选）
+      成功 → classifyEmbedding() // semantic.ts：锚点余弦 + margin 升级 + 欠路由安全网
+           → semanticRouteDecision() // router.ts：置信度门 + flag 升级
+      失败 → classifyTurn()      // router.ts：② + ③ + ④ 本地启发式
+  → SessionTierStore.get()       // 读上一轮服务的档位（粘滞用）
+  → resolveRoute()               // router.ts：⑤
       → nearestConfiguredTier()
-      → applySticky()           // ⑤ 的 KV-cache 粘滞
-  → SessionTierStore.record()   // 记录本轮档位 + 追加路由历史
+      → applySticky()            // ⑤ 的 KV-cache 粘滞
+  → SessionTierStore.set()       // 记录本轮服务的档位
 ```
 
 会话状态（`session-store.ts`）：`SessionTierStore` 是有界的 per-session
-内存表，记录每个会话上一轮**实际服务的档位**和最近 5 条路由决策（发给 ML 服务的
-历史上下文——V4 分类器是历史感知的），TTL 30 分钟、按容量 LRU 淘汰。丢失一条只是
-让下一轮自由重路由（安全，无用户可见数据）。
+内存表，记录每个会话上一轮**实际服务的档位**，TTL 30 分钟、按容量 LRU 淘汰。丢失
+一条只是让下一轮自由重路由（安全，无用户可见数据）。
 
-远程 ML（阶段 ⓪，`ml-client.ts` + opensquilla `squilla_router/http_service.py`）：
+语义分类（阶段 ⓪，`semantic.ts` + `embeddings-client.ts`）——**所有路由逻辑都在
+插件内，外部只部署通用 embedding 模型**：
 
-- 服务端跑完整 V4 管线（BGE 语义嵌入 + LightGBM/MLP 集成 + 规则后处理），部署在
-  有算力的外部机器上；插件侧只发一个 HTTP POST。
-- 降级链与 OpenSquilla 进程内一致：**ML 优先，任何失败（超时/网络/5xx/格式不符）
-  静默回落本地启发式**，路由永不因 ML 服务慢而阻塞（默认 2s 超时）。
-- ML 返回已包含服务端 flag 升级等后处理，插件侧不重复套用 ②③④；只加两层本地
-  防护：置信度门（低于 `confidenceThreshold` 回落 `defaultTier`）和 KV-cache 粘滞。
-- 鉴权：`ml.apiKey` 以 Bearer 头发送，服务端用 `OPENSQUILLA_ROUTER_TOKEN` 校验。
+- 每个档位拥有一组**锚点样例**（`TIER_ANCHOR_TEXTS`，中英混合，取材自 OpenSquilla
+  `router.runtime.yaml` 的 tier intents：c0 琐碎确认、c1 常规有界任务、c2 调试/
+  多步分析、c3 架构/高风险）。锚点向量每进程只算一次（一次批量 embedding 调用），
+  失败下轮重试，期间走启发式。
+- 每轮一次 HTTP embedding 调用拿消息向量，插件内做余弦相似度：每档取 top-2 锚点
+  相似度均值 → softmax 得 4 类概率 → **margin 升级**（top1-top2 < 0.10 升一档）→
+  **欠路由安全网**（P(c2)+P(c3) > 0.45 时至少 c2）——两条阈值与
+  `router.runtime.yaml` 一致。
+- 之后回到 `router.ts`：**置信度门**（低于 `confidenceThreshold` 回落
+  `defaultTier`）→ **flag 升级照常叠加**（语义分类不懂"删库上生产"的风险语义
+  权重，关键词规则仍是硬保障）→ 就近取档 → 粘滞。
+- 降级链与 OpenSquilla 进程内一致：任何失败（超时/网络/5xx/格式不符）静默回落
+  本地启发式，路由永不因 embedding 服务慢而阻塞（默认 2s 超时）。
+- 这是"简短但难"问题的解法：`"容灾架构怎么选"` 只有 8 个字符，长度启发式判 c0，
+  语义分类正确路由到 c3（已在真实 HTTP 链路上验证）。
 
 档位命名：`c0`（最便宜/最快）→ `c1` → `c2` → `c3`（最强）。对应 OpenSquilla 的
 路由类 `R0`–`R3`。
@@ -301,14 +312,16 @@ core 在 `src/agents/embedded-agent-runner/run/setup.ts` 消费这个返回值�
 
 ## 与 OpenSquilla 完整版的差距（PoC 范围）
 
-本层刻意只移植无依赖的规则子集，以下未包含：
+- ~~ML 语义分类~~：**已通过阶段 ⓪ 接入**——外部只部署通用 embedding 模型，分类
+  逻辑（锚点相似度 + 后处理）全在插件内。与 OpenSquilla 的差别：它用的是在真实
+  流量上**训练过**的 LightGBM/MLP 集成（吃 390 维特征），本插件用的是**零训练**的
+  锚点相似度分类；准确率上限低一些，但换来零 Python、零私有模型资产、可随时改
+  锚点调节行为。
+- **训练后的分类头**：想进一步提准，可在插件侧把锚点换成用户自己流量上训练的
+  轻量分类头（嵌入向量 + 逻辑回归权重可以直接放配置/文件里，仍是纯 TS 推理）。
+- **提示词策略 P0/P2 与思考档位**：未实现（需要 `before_prompt_build` 注入）。
+- **历史感知特征**：上一轮助手回复/usage 不参与分类（`before_model_resolve`
+  钩子拿不到）；分档只看当前消息，粘滞负责跨轮连续性。
+- **自学习飞轮**：无（OpenSquilla 的重训管线是 Python 侧能力，本方案不依赖它）。
 
-- ~~ML 分类~~：**已通过阶段 ⓪ 的远程 HTTP 服务接入**（外部部署，插件侧零 ML 依赖）。
-- **提示词策略 P0/P2**：服务已返回 `thinkingMode`/`promptPolicy`，插件侧尚未消费
-  （需要 `before_prompt_build` 注入，未实现）。
-- **更完整的会话内历史信号**：上一轮助手回复文本/usage 未上送（`before_model_resolve`
-  钩子拿不到），ML 服务的 assistant 通道特征因此缺席；用户轮历史已上送。
-- **自学习飞轮**：特征捕获 + 离线重训（属于服务端 OpenSquilla 的能力，需在服务侧开启）。
-
-ML 服务部署方式见 `README.md` 的 "Deploying the service" 一节；服务端实现在
-opensquilla 仓库 `src/opensquilla/squilla_router/http_service.py`。
+embedding 模型部署方式见 `README.md`（TEI/Ollama/任意 OpenAI 兼容服务均可）。

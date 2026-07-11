@@ -48,6 +48,7 @@
         "required": ["url"],
         "properties": {
           "url": { "type": "string" },
+          "model": { "type": "string" },
           "apiKey": { "type": "string" },
           "timeoutMs": { "type": "integer", "minimum": 1 },
           "confidenceThreshold": { "type": "number", "minimum": 0, "maximum": 1 }

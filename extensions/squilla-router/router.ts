@@ -19,8 +19,8 @@ export type HeuristicBand =
   | "medium_plain"
   | "borderline_plain";
 
-/** Where a decision came from: a heuristic band, or the remote ML service. */
-export type RouteBand = HeuristicBand | "ml";
+/** Where a decision came from: a heuristic band, or the embedding classifier. */
+export type RouteBand = HeuristicBand | "semantic";
 
 export type RoutingFlags = {
   highRisk: boolean;
@@ -54,32 +54,19 @@ export type StickyConfig = {
   maxUserLen: number;
 };
 
-// Remote ML classification (opensquilla squilla_router/http_service.py).
-// When configured, the plugin asks the external service for the tier and only
-// falls back to the local heuristic on failure — same ML-first/heuristic-backup
-// chain OpenSquilla runs in-process.
+// Embedding-backed semantic routing. Only the embedding MODEL is deployed
+// externally (any OpenAI-compatible /v1/embeddings server); every bit of
+// routing logic — anchors, scoring, post-processing — runs in this plugin.
+// Any failure falls back to the local heuristic.
 export type MlRouterConfig = {
-  /** Full classify endpoint URL, e.g. http://ml-box:8701/v1/classify */
+  /** OpenAI-compatible embeddings endpoint, e.g. http://ml-box:8080/v1/embeddings */
   url: string;
+  /** Model name sent in the request body; must be bilingual for zh+en anchors. */
+  model: string;
   apiKey?: string;
   timeoutMs: number;
   /** Below this confidence the decision flattens to defaultTier (OpenSquilla confidence gate). */
   confidenceThreshold: number;
-};
-
-export type MlHistoryEntry = {
-  text: string;
-  routeClass: RouteClass;
-  difficulty?: number;
-  margin?: number;
-};
-
-export type MlClassification = {
-  tier: Tier;
-  routeClass: RouteClass;
-  confidence: number;
-  difficulty?: number;
-  margin?: number;
 };
 
 export type SquillaRouterConfig = {
@@ -91,6 +78,7 @@ export type SquillaRouterConfig = {
 
 const ML_DEFAULT_TIMEOUT_MS = 2_000;
 const ML_DEFAULT_CONFIDENCE_THRESHOLD = 0.5;
+const ML_DEFAULT_MODEL = "bge-small-zh-v1.5";
 
 // Default matches OpenSquilla's sticky_tier.max_user_len. Enabled by default
 // here (unlike OpenSquilla's shipped default-off): OpenSquilla gated it off
@@ -254,29 +242,27 @@ export function classifyTurn(message: string, attachmentCount = 0): RouteDecisio
   };
 }
 
-const NO_FLAGS: RoutingFlags = {
-  highRisk: false,
-  debug: false,
-  repoArch: false,
-  strictFormat: false,
-  longContext: false,
-};
-
-// Adapt a remote ML classification into the local decision shape. The service
-// already ran the full server-side post-processing (flag overrides, safety
-// nets), so no flag upgrades re-apply here — only the confidence gate: a
-// low-confidence ML answer flattens to the operator's defaultTier, mirroring
-// OpenSquilla's engine-level confidence gate.
-export function mlRouteDecision(ml: MlClassification, config: SquillaRouterConfig): RouteDecision {
+// Turn an embedding-based semantic classification into a route decision.
+// Two local guards apply on top of the semantic tier, mirroring the heuristic
+// path's semantics: the confidence gate flattens a low-confidence answer to
+// defaultTier, and the flag upgrades still lift risk-signal turns afterwards
+// (a gated tier with a "delete production" keyword must not stay cheap).
+export function semanticRouteDecision(
+  semantic: { tier: Tier; confidence: number },
+  message: string,
+  config: SquillaRouterConfig,
+): RouteDecision {
   const threshold = config.ml?.confidenceThreshold ?? ML_DEFAULT_CONFIDENCE_THRESHOLD;
-  const tier = ml.confidence < threshold ? config.defaultTier : ml.tier;
+  const gatedTier = semantic.confidence < threshold ? config.defaultTier : semantic.tier;
+  const flags = computeFlags(message);
+  const tier = applyFlagUpgrades(gatedTier, flags);
   return {
-    band: "ml",
+    band: "semantic",
     tier,
     routeClass: CLASS_BY_TIER[tier],
-    confidence: ml.confidence,
-    flags: NO_FLAGS,
-    flagUpgraded: false,
+    confidence: semantic.confidence,
+    flags,
+    flagUpgraded: tier !== gatedTier,
   };
 }
 
@@ -408,6 +394,10 @@ function parseMlConfig(raw: unknown): MlRouterConfig | undefined {
   if (!url) {
     return undefined;
   }
+  const model =
+    typeof record.model === "string" && record.model.trim()
+      ? record.model.trim()
+      : ML_DEFAULT_MODEL;
   const apiKey = typeof record.apiKey === "string" && record.apiKey ? record.apiKey : undefined;
   const timeoutMs =
     typeof record.timeoutMs === "number" &&
@@ -422,7 +412,7 @@ function parseMlConfig(raw: unknown): MlRouterConfig | undefined {
     record.confidenceThreshold <= 1
       ? record.confidenceThreshold
       : ML_DEFAULT_CONFIDENCE_THRESHOLD;
-  return { url, ...(apiKey ? { apiKey } : {}), timeoutMs, confidenceThreshold };
+  return { url, model, ...(apiKey ? { apiKey } : {}), timeoutMs, confidenceThreshold };
 }
 
 function parseStickyConfig(raw: unknown): StickyConfig {

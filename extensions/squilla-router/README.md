@@ -5,14 +5,19 @@ Before each agent run, the plugin classifies the prompt into a tier (`c0`-`c3`,
 cheap to strong) and overrides the model for that run via the
 `before_model_resolve` hook.
 
-Two classification paths, same chain OpenSquilla runs in-process:
+Two classification paths, same ML-first/heuristic-backup chain OpenSquilla
+runs in-process — with ALL routing logic inside this plugin. The only external
+piece is a generic embedding model:
 
-1. **Remote ML** (optional, `config.ml`): POST the prompt plus recent route
-   history to an external SquillaRouter classification service (opensquilla
-   `python -m opensquilla.squilla_router.http_service`) running the full
-   BGE + LightGBM + MLP pipeline on a box that can afford the ML runtime.
+1. **Semantic** (optional, `config.ml`): embed the prompt via any
+   OpenAI-compatible `/v1/embeddings` endpoint (TEI, vLLM, Ollama, or a cloud
+   embeddings API — deploy `bge-small-zh-v1.5` or any bilingual embedding
+   model), then classify in-plugin by cosine similarity against per-tier
+   anchor prompts (`semantic.ts`), with OpenSquilla's margin-upgrade and
+   under-routing-safety rules applied in probability space. One embedding
+   call per turn; anchors are embedded once per gateway process.
 2. **Local heuristics** (always available): the dependency-free rule layer
-   below, used when `ml` is not configured or the service call fails or
+   below, used when `ml` is not configured or the embedding call fails or
    times out.
 
 Heuristic sources ported (thresholds and keyword lists kept equivalent):
@@ -57,7 +62,8 @@ Heuristic sources ported (thresholds and keyword lists kept equivalent):
           },
           "sticky": { "enabled": true, "maxUserLen": 200 },
           "ml": {
-            "url": "http://ml-box:8701/v1/classify",
+            "url": "http://ml-box:8080/v1/embeddings",
+            "model": "bge-small-zh-v1.5",
             "apiKey": "<token>",
             "timeoutMs": 2000,
             "confidenceThreshold": 0.5
@@ -72,30 +78,32 @@ Heuristic sources ported (thresholds and keyword lists kept equivalent):
 Tiers without a `model` are skipped. If no tier is usable the plugin logs a
 warning and disables itself for the session.
 
-`ml` enables remote ML classification (all optional except `url`):
+`ml` enables semantic routing (all optional except `url`):
 
-- `url` — full classify endpoint of the external service.
-- `apiKey` — sent as `Authorization: Bearer <apiKey>`; pair with
-  `OPENSQUILLA_ROUTER_TOKEN` on the service.
+- `url` — OpenAI-compatible embeddings endpoint on your model server.
+- `model` (default `bge-small-zh-v1.5`) — model name sent in the request; use
+  a bilingual embedding model, the anchors are zh+en.
+- `apiKey` — sent as `Authorization: Bearer <apiKey>` when set.
 - `timeoutMs` (default 2000) — on timeout the turn silently uses the local
-  heuristic; routing never blocks on a slow ML box.
-- `confidenceThreshold` (default 0.5) — ML answers below this confidence
-  flatten to `defaultTier` (OpenSquilla's confidence gate).
+  heuristic; routing never blocks on a slow embeddings box.
+- `confidenceThreshold` (default 0.5) — semantic answers below this confidence
+  flatten to `defaultTier` (OpenSquilla's confidence gate). Flag upgrades and
+  sticky routing apply on top of both paths.
 
 Failures are logged at warn level at most once per minute; each affected turn
-still routes via the heuristic. Sticky routing applies on top of both paths.
+still routes via the heuristic.
 
-Deploying the service (on the ML box):
+Deploying the embedding model (on the ML box) — any OpenAI-compatible server
+works, for example text-embeddings-inference:
 
 ```bash
-pip install 'opensquilla[recommended]'   # or a source checkout + git lfs pull
-OPENSQUILLA_ROUTER_TOKEN=<token> \
-  python -m opensquilla.squilla_router.http_service --host 0.0.0.0 --port 8701
+docker run -p 8080:80 ghcr.io/huggingface/text-embeddings-inference:cpu-latest \
+  --model-id BAAI/bge-small-zh-v1.5
+# then: url = http://ml-box:8080/v1/embeddings
 ```
 
-The service refuses to start without a working ML runtime, and answers 503 if
-the runtime breaks later — the plugin then falls back to heuristics instead of
-mistaking degraded default-tier answers for ML output.
+or Ollama (`ollama pull bge-m3`, `url = http://ml-box:11434/v1/embeddings`,
+`model = "bge-m3"`), or a hosted embeddings API.
 
 `sticky` controls KV-cache-aware downgrade blocking (defaults shown above):
 
