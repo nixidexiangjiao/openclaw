@@ -33,7 +33,8 @@ agent 运行前，`before_model_resolve` 钩子触发：
         │                                     ③ 置信度门（低置信 → defaultTier）
         │                                     ④ flag 升级（高风险/调试+长上下文…）
         │                                     ⑤ 决策落库（无明文）+ 返回
-        │                                        {tier, decisionId, ...}
+        │                                        {tier, decisionId, confidence,
+        │                                         meta:{…}}（协议通用，meta 客户端不解析）
         ├─ 成功 → 拿到抽象档位
         └─ 失败/超时 → 本地启发式（router.ts classifyTurn，②③④ 的规则版）
   ⑥ 落地：就近取配置档位 + KV-cache 粘滞 → modelOverride/providerOverride
@@ -55,7 +56,7 @@ agent 运行前，`before_model_resolve` 钩子触发：
   → classify_semantic()         // 锚点余弦 + margin 升级 + 欠路由安全网
                                 //   + 置信度门 + flag 升级（V4 管线的替换接缝）
       （embedding 失败 → classify_heuristic() 中央侧启发式，照常落库）
-  → CentralStore.insert_decision // sqlite3：无明文决策记录
+  → MySqlStore.insert_decision   // MySQL：无明文决策记录
 ```
 
 **职责切分**：中央拥有一切"决策"（策略改一处全网生效，per-tenant 数据集中给
@@ -66,7 +67,7 @@ margin/安全网阈值）在 Python 中央与 TS 兜底两侧各有一份，均�
 
 **隐私与可追踪**（用户定案：接口传明文，库不存明文）：
 
-- 中央 `CentralStore`（Python `sqlite3`）的 schema **没有消息文本列**——只存派生
+- 中央 `MySqlStore`（Python + PyMySQL，MySQL）的 schema **没有消息文本列**——只存派生
   数据：字符数、flag、4 类概率、margin、`base→gated→final` 三段档位轨迹、最近
   3 个锚点及相似度、嵌入向量（未来自学习的原料）、策略版本号、延迟。
 - 每次决策返回 `decisionId`；插件把它打进 debug 日志，与本地会话记录（明文所在地）

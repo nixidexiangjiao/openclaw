@@ -19,8 +19,8 @@ export type HeuristicBand =
   | "medium_plain"
   | "borderline_plain";
 
-/** Where a decision came from: a heuristic band, or the embedding classifier. */
-export type RouteBand = HeuristicBand | "semantic";
+/** Where a decision came from: a local heuristic band, or the central service. */
+export type RouteBand = HeuristicBand | "central";
 
 export type RoutingFlags = {
   highRisk: boolean;

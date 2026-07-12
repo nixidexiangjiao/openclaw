@@ -8,15 +8,14 @@ const config: CentralConfig = {
   timeoutMs: 500,
 };
 
+// Generic wire response: tier + decisionId + confidence, plus an opaque `meta`
+// object the client never decodes. Algorithm-specific detail lives in meta.
 const okBody = {
   decisionId: "d-1",
   tier: "c2",
-  routeClass: "R2",
-  band: "semantic",
   confidence: 0.83,
-  flags: { highRisk: false, debug: true, repoArch: false, strictFormat: false, longContext: false },
-  flagUpgraded: false,
   policyVersion: "central-v1",
+  meta: { routeClass: "R2", band: "anchor", flags: { debug: true }, flagUpgraded: false },
 };
 
 function fetchStub(
@@ -40,14 +39,16 @@ describe("routeRemote", () => {
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.route.decisionId).toBe("d-1");
+      // routeClass/band are derived locally from the abstract tier; the opaque
+      // meta is not decoded, so central decisions carry no heuristic flags.
       expect(result.route.decision).toMatchObject({
-        band: "semantic",
+        band: "central",
         tier: "c2",
         routeClass: "R2",
         confidence: 0.83,
         flagUpgraded: false,
       });
-      expect(result.route.decision.flags.debug).toBe(true);
+      expect(result.route.decision.flags.debug).toBe(false);
     }
     expect(seen?.url).toBe(config.url);
     expect(JSON.parse(String(seen?.init.body))).toEqual({
@@ -56,6 +57,19 @@ describe("routeRemote", () => {
       message: "explain this traceback",
       attachmentCount: 0,
     });
+  });
+
+  it("accepts a minimal response with only tier and decisionId", async () => {
+    const result = await routeRemote(
+      config,
+      { sessionKey: "s1", message: "hi", attachmentCount: 0 },
+      fetchStub(() => Response.json({ tier: "c1", decisionId: "d-2" })),
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      // No confidence in the response falls back to full trust in the tier.
+      expect(result.route.decision).toMatchObject({ tier: "c1", routeClass: "R1", confidence: 1 });
+    }
   });
 
   it("sends a bearer token when apiKey is configured", async () => {

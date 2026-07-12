@@ -5,6 +5,11 @@ central routing service**: before each agent run it POSTs the prompt to the
 service, gets back an abstract tier (`c0`-`c3`, cheap to strong), maps it to a
 locally configured model, and overrides the run via `before_model_resolve`.
 
+The wire contract is **generic**: the client depends only on the abstract
+`tier` plus a `decisionId` trace handle. Any richer, algorithm-specific data
+rides in an opaque `meta` object the client never decodes, so the routing
+algorithm behind the service can be swapped with no plugin change.
+
 ```
 openclaw plugin (thin client)          central service (all routing logic)
   image bypass                           embed message (external embeddings box)
@@ -23,8 +28,8 @@ KV-cache sticky, image bypass), or must not leave the machine (attachments).
 ## Privacy and traceability contract
 
 - The wire carries the message text (internal deployment).
-- The central store **never** persists it: the `decisions` schema has no text
-  column — only derived data (char length, flags, probabilities, the
+- The central store (MySQL) **never** persists it: the `decisions` schema has
+  no text column — only derived data (char length, flags, probabilities, the
   base -> gated -> final tier trail, nearest anchors, the embedding vector).
 - Every route response carries a `decisionId`. The plugin logs it next to the
   session transcript — the transcript is where plaintext lives, the central
@@ -84,21 +89,25 @@ KV-cache sticky, image bypass), or must not leave the machine (attachments).
 
 ## Deploying the central service
 
-The service is Python (stdlib only — no pip install) and lives in the
-opensquilla repo at `services/squilla_central/server.py`. Python was chosen
-deliberately: OpenSquilla's trained V4 pipeline and self-learning stack are
-Python, so upgrading the central classifier later is a drop-in change at the
-service's `classify_semantic` seam. Copy the directory to the router box and:
+The service is Python (stdlib plus PyMySQL — `pip install PyMySQL`) and lives
+in the opensquilla repo at `services/squilla_central/server.py`. Python was
+chosen deliberately: OpenSquilla's trained V4 pipeline and self-learning stack
+are Python, so upgrading the central classifier later is a drop-in change at
+the service's `classify_semantic` seam. Point it at a MySQL database (the
+`decisions`/`feedback` tables are created on startup), copy the directory to
+the router box, and:
 
 ```bash
 SQUILLA_EMBEDDINGS_URL=http://ml-box:8080/v1/embeddings \
 SQUILLA_EMBEDDINGS_MODEL=bge-small-zh-v1.5 \
 SQUILLA_CENTRAL_TOKEN=<token> \
-SQUILLA_DB_PATH=/var/lib/squilla/central.sqlite \
+SQUILLA_MYSQL_HOST=db-box SQUILLA_MYSQL_USER=squilla \
+SQUILLA_MYSQL_PASSWORD=<password> SQUILLA_MYSQL_DATABASE=squilla_central \
 python3 services/squilla_central/server.py --host 0.0.0.0 --port 8710
 ```
 
-Optional env: `SQUILLA_EMBEDDINGS_API_KEY`, `SQUILLA_EMBEDDINGS_TIMEOUT_S`,
+Optional env: `SQUILLA_MYSQL_PORT` (default `3306`),
+`SQUILLA_EMBEDDINGS_API_KEY`, `SQUILLA_EMBEDDINGS_TIMEOUT_S`,
 `SQUILLA_DEFAULT_TIER` (c0-c3), `SQUILLA_CONFIDENCE_THRESHOLD` (0-1),
 `SQUILLA_POLICY_VERSION` (stamped on every decision for reproducibility).
 
