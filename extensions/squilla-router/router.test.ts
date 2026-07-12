@@ -4,7 +4,6 @@ import {
   computeFlags,
   parseRouterConfig,
   resolveRoute,
-  semanticRouteDecision,
   type SquillaRouterConfig,
 } from "./router.js";
 
@@ -198,49 +197,6 @@ describe("sticky routing (KV-cache-aware)", () => {
     });
     expect(route?.resolvedTier).toBe("c0");
     expect(route?.stuck).toBe(false);
-  });
-});
-
-describe("semanticRouteDecision", () => {
-  const gate = { defaultTier: "c1", confidenceThreshold: 0.5 } as const;
-
-  it("uses the semantic tier when confidence clears the gate", () => {
-    const decision = semanticRouteDecision({ tier: "c3", confidence: 0.9 }, "普通问题", gate);
-    expect(decision.band).toBe("semantic");
-    expect(decision.tier).toBe("c3");
-    expect(decision.routeClass).toBe("R3");
-    expect(decision.gatedTier).toBe("c3");
-    expect(decision.flagUpgraded).toBe(false);
-  });
-
-  it("flattens a low-confidence answer to defaultTier", () => {
-    const decision = semanticRouteDecision({ tier: "c3", confidence: 0.3 }, "普通问题", gate);
-    expect(decision.tier).toBe("c1");
-    expect(decision.gatedTier).toBe("c1");
-    expect(decision.routeClass).toBe("R1");
-  });
-
-  it("flag upgrades still lift a gated or cheap semantic tier", () => {
-    const decision = semanticRouteDecision(
-      { tier: "c0", confidence: 0.9 },
-      "把这个删除了直接部署到生产",
-      gate,
-    );
-    expect(decision.flags.highRisk).toBe(true);
-    expect(decision.gatedTier).toBe("c0");
-    expect(decision.tier).toBe("c2");
-    expect(decision.flagUpgraded).toBe(true);
-  });
-
-  it("sticky still applies over a semantic decision", () => {
-    const stickyConfig: SquillaRouterConfig = {
-      ...fullConfig,
-      sticky: { enabled: true, maxUserLen: 200 },
-    };
-    const decision = semanticRouteDecision({ tier: "c0", confidence: 0.95 }, "go on", gate);
-    const route = resolveRoute(stickyConfig, decision, { lastTier: "c2", promptLen: 5 });
-    expect(route?.resolvedTier).toBe("c2");
-    expect(route?.stuck).toBe(true);
   });
 });
 

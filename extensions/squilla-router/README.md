@@ -84,24 +84,21 @@ KV-cache sticky, image bypass), or must not leave the machine (attachments).
 
 ## Deploying the central service
 
-The service is dependency-free Node (node:sqlite storage). Bundle and run:
+The service is Python (stdlib only — no pip install) and lives in the
+opensquilla repo at `services/squilla_central/server.py`. Python was chosen
+deliberately: OpenSquilla's trained V4 pipeline and self-learning stack are
+Python, so upgrading the central classifier later is a drop-in change at the
+service's `classify_semantic` seam. Copy the directory to the router box and:
 
 ```bash
-# in the openclaw repo
-node_modules/.bin/esbuild extensions/squilla-router/central/main.ts \
-  --bundle --format=esm --platform=node --external:node:sqlite \
-  --outfile=squilla-central.mjs
-
-# on the router box (needs an OpenAI-compatible embeddings endpoint)
 SQUILLA_EMBEDDINGS_URL=http://ml-box:8080/v1/embeddings \
 SQUILLA_EMBEDDINGS_MODEL=bge-small-zh-v1.5 \
 SQUILLA_CENTRAL_TOKEN=<token> \
 SQUILLA_DB_PATH=/var/lib/squilla/central.sqlite \
-SQUILLA_HOST=0.0.0.0 SQUILLA_PORT=8710 \
-node squilla-central.mjs
+python3 services/squilla_central/server.py --host 0.0.0.0 --port 8710
 ```
 
-Optional env: `SQUILLA_EMBEDDINGS_API_KEY`, `SQUILLA_EMBEDDINGS_TIMEOUT_MS`,
+Optional env: `SQUILLA_EMBEDDINGS_API_KEY`, `SQUILLA_EMBEDDINGS_TIMEOUT_S`,
 `SQUILLA_DEFAULT_TIER` (c0-c3), `SQUILLA_CONFIDENCE_THRESHOLD` (0-1),
 `SQUILLA_POLICY_VERSION` (stamped on every decision for reproducibility).
 

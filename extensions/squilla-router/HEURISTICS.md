@@ -19,15 +19,17 @@ SquillaRouter 的**无依赖规则子集**（不含 ML 模型），把每一轮�
 
 ## 总览：一次路由的流程
 
-架构是**中央化**的：插件是瘦客户端，路由智能全部在中央服务（`central/server.ts`，
-独立部署）。每一轮 agent 运行前，`before_model_resolve` 钩子触发：
+架构是**中央化**的：插件是瘦客户端，路由智能全部在中央服务（Python 实现，位于
+opensquilla 仓库 `services/squilla_central/server.py`，独立部署——选 Python 是为了
+后续把 OpenSquilla 训练好的 V4 管线/自学习栈直接接入中央时改动最小）。每一轮
+agent 运行前，`before_model_resolve` 钩子触发：
 
 ```
-插件侧 (index.ts)                          中央侧 (central/server.ts)
+插件侧 (index.ts, TS)                      中央侧 (services/squilla_central, Python)
   ① 图片短路（有图不覆盖，直接返回）
   ⓪ POST /v1/route {tenantId,             ── 嵌入消息（外部 embedding 服务）
      sessionKey, message, attachmentCount}    ② 语义分类：锚点余弦 + margin 升级
-        │                                        + 欠路由安全网（semantic.ts）
+        │                                        + 欠路由安全网（classify_semantic）
         │                                     ③ 置信度门（低置信 → defaultTier）
         │                                     ④ flag 升级（高风险/调试+长上下文…）
         │                                     ⑤ 决策落库（无明文）+ 返回
@@ -41,31 +43,32 @@ SquillaRouter 的**无依赖规则子集**（不含 ML 模型），把每一轮�
 对应的调用链：
 
 ```
-插件  index.ts before_model_resolve
+插件（TS）  index.ts before_model_resolve
   → routeRemote()               // central-client.ts：POST /v1/route
       失败 → classifyTurn()     // router.ts：本地启发式兜底
   → SessionTierStore.get()      // 读上一轮服务的档位（粘滞用）
   → resolveRoute()              // router.ts：就近取档 + applySticky()
   → SessionTierStore.set()      // 记录本轮服务的档位
 
-中央  central/server.ts Central.route
-  → embedTexts()                // embeddings-client.ts：调外部 embedding 服务
-  → classifyEmbedding()         // semantic.ts：锚点余弦 + margin + 安全网
-  → semanticRouteDecision()     // router.ts：置信度门 + flag 升级
-      （embedding 失败 → classifyTurn() 中央侧启发式，照常落库）
-  → CentralStore.insertDecision // central/store.ts：无明文决策记录
+中央（Python）  services/squilla_central/server.py Central._route
+  → embed_texts()               // urllib 调外部 embedding 服务（OpenAI 兼容）
+  → classify_semantic()         // 锚点余弦 + margin 升级 + 欠路由安全网
+                                //   + 置信度门 + flag 升级（V4 管线的替换接缝）
+      （embedding 失败 → classify_heuristic() 中央侧启发式，照常落库）
+  → CentralStore.insert_decision // sqlite3：无明文决策记录
 ```
 
 **职责切分**：中央拥有一切"决策"（策略改一处全网生效，per-tenant 数据集中给
 自学习供料）；插件只保留中央宕机也必须活着的（启发式兜底）、天然属于端上的
-（档位→模型映射、KV-cache 粘滞、图片短路）。分类逻辑只有一份源码
-（`semantic.ts`/`router.ts`），中央与插件兜底共用，不会漂移。
+（档位→模型映射、KV-cache 粘滞、图片短路）。规则常量（分档阈值、flag 关键词、
+margin/安全网阈值）在 Python 中央与 TS 兜底两侧各有一份，均标注同源
+（OpenSquilla `router.runtime.yaml`），改动时需同步。
 
 **隐私与可追踪**（用户定案：接口传明文，库不存明文）：
 
-- `central/store.ts` 的 schema **没有消息文本列**——只存派生数据：字符数、flag、
-  4 类概率、margin、`base→gated→final` 三段档位轨迹、最近 3 个锚点及相似度、
-  嵌入向量（未来自学习的原料）、策略版本号、延迟。
+- 中央 `CentralStore`（Python `sqlite3`）的 schema **没有消息文本列**——只存派生
+  数据：字符数、flag、4 类概率、margin、`base→gated→final` 三段档位轨迹、最近
+  3 个锚点及相似度、嵌入向量（未来自学习的原料）、策略版本号、延迟。
 - 每次决策返回 `decisionId`；插件把它打进 debug 日志，与本地会话记录（明文所在地）
   并排。查问题的四步手册见 README "Debugging runbook"。
 - 排查接口：`GET /v1/decisions/{id}`（完整轨迹+锚点画像+评分）、
@@ -77,7 +80,8 @@ SquillaRouter 的**无依赖规则子集**（不含 ML 模型），把每一轮�
 内存表，记录每个会话上一轮**实际服务的档位**，TTL 30 分钟、按容量 LRU 淘汰。丢失
 一条只是让下一轮自由重路由（安全，无用户可见数据）。
 
-语义分类（`semantic.ts`，跑在中央）：每个档位一组**锚点样例**（中英混合，取材自
+语义分类（`classify_semantic`，跑在 Python 中央；也是接入 V4 训练管线的替换接缝）：
+每个档位一组**锚点样例**（中英混合，取材自
 OpenSquilla tier intents），锚点向量每进程只 embed 一次；每轮拿消息向量后做
 余弦相似度：每档取 top-2 锚点均值 → softmax 得 4 类概率 → **margin 升级**
 （top1-top2 < 0.10 升一档）→ **欠路由安全网**（P(c2)+P(c3) > 0.45 时至少 c2），

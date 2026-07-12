@@ -239,37 +239,6 @@ export function classifyTurn(message: string, attachmentCount = 0): RouteDecisio
   };
 }
 
-/** Confidence-gate parameters for the semantic pipeline (central-side config). */
-export type SemanticGate = { defaultTier: Tier; confidenceThreshold: number };
-
-/** RouteDecision plus the intermediate tier, kept for the decision trail. */
-export type SemanticDecision = RouteDecision & { gatedTier: Tier };
-
-// Turn an embedding-based semantic classification into a route decision.
-// Two guards apply on top of the semantic tier, mirroring the heuristic
-// path's semantics: the confidence gate flattens a low-confidence answer to
-// defaultTier, and the flag upgrades still lift risk-signal turns afterwards
-// (a gated tier with a "delete production" keyword must not stay cheap).
-export function semanticRouteDecision(
-  semantic: { tier: Tier; confidence: number },
-  message: string,
-  gate: SemanticGate,
-): SemanticDecision {
-  const gatedTier =
-    semantic.confidence < gate.confidenceThreshold ? gate.defaultTier : semantic.tier;
-  const flags = computeFlags(message);
-  const tier = applyFlagUpgrades(gatedTier, flags);
-  return {
-    band: "semantic",
-    tier,
-    routeClass: CLASS_BY_TIER[tier],
-    confidence: semantic.confidence,
-    flags,
-    flagUpgraded: tier !== gatedTier,
-    gatedTier,
-  };
-}
-
 // heuristic.py _nearest_valid_tier: prefer the same tier, then walk up so an
 // unconfigured tier never silently downgrades a turn, then walk down.
 function nearestConfiguredTier(tier: Tier, tiers: SquillaRouterConfig["tiers"]): Tier | undefined {
