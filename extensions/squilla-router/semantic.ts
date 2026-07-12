@@ -69,7 +69,15 @@ export type SemanticClassification = {
   confidence: number;
   /** Top-1 minus top-2 probability. */
   margin: number;
+  /**
+   * Nearest anchors overall. Anchors are our own non-sensitive texts, so this
+   * is the storable "what did the message look like" explanation for debug
+   * trails that must not contain the message itself.
+   */
+  topAnchors: { text: string; similarity: number }[];
 };
+
+const TOP_ANCHORS_REPORTED = 3;
 
 // Softmax temperature over cosine scores. bge cosines cluster in a narrow
 // band (~0.4-0.9); a small temperature spreads them into usable probabilities.
@@ -122,14 +130,19 @@ export function classifyEmbedding(
     throw new Error(`expected ${expected} anchor vectors, got ${anchorVectors.length}`);
   }
 
+  const anchorTexts = flatAnchorTexts();
+  const allSims = anchorVectors.map((anchor) => cosine(query, anchor));
   const tierScores: number[] = [];
   let offset = 0;
   for (const tier of TEXT_TIERS) {
     const count = TIER_ANCHOR_TEXTS[tier].length;
-    const sims = anchorVectors.slice(offset, offset + count).map((anchor) => cosine(query, anchor));
-    tierScores.push(meanTopK(sims, TOP_K_ANCHORS));
+    tierScores.push(meanTopK(allSims.slice(offset, offset + count), TOP_K_ANCHORS));
     offset += count;
   }
+  const topAnchors = allSims
+    .map((similarity, idx) => ({ text: anchorTexts[idx], similarity }))
+    .sort((a, b) => b.similarity - a.similarity)
+    .slice(0, TOP_ANCHORS_REPORTED);
 
   const probs = softmax(tierScores, SCORE_TEMPERATURE);
   const ranked = probs.map((p, idx) => ({ p, idx })).sort((a, b) => b.p - a.p);
@@ -158,5 +171,6 @@ export function classifyEmbedding(
     },
     confidence,
     margin,
+    topAnchors,
   };
 }

@@ -1,12 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { embedTexts } from "./embeddings-client.js";
-import type { MlRouterConfig } from "./router.js";
+import { embedTexts, type EmbeddingsConfig } from "./embeddings-client.js";
 
-const config: MlRouterConfig = {
+const config: EmbeddingsConfig = {
   url: "http://ml-box:8080/v1/embeddings",
   model: "bge-small-zh-v1.5",
   timeoutMs: 500,
-  confidenceThreshold: 0.5,
 };
 
 function fetchStub(

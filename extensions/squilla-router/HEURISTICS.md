@@ -19,66 +19,70 @@ SquillaRouter 的**无依赖规则子集**（不含 ML 模型），把每一轮�
 
 ## 总览：一次路由的流程
 
-每一轮 agent 运行前，`before_model_resolve` 钩子触发：
+架构是**中央化**的：插件是瘦客户端，路由智能全部在中央服务（`central/server.ts`，
+独立部署）。每一轮 agent 运行前，`before_model_resolve` 钩子触发：
 
 ```
-入口 (prompt, attachments)
-  │
-  ├─① 图片短路      ── 有图片附件 → 不覆盖，直接返回（保持会话原模型）
-  │
-  ├─⓪ 语义分类      ── 配置了 ml.url 时：HTTP 调外部 embedding 模型服务拿消息
-  │                    向量（OpenAI 兼容 /v1/embeddings，模型独立部署），
-  │                    插件内做锚点相似度分类 + margin 升级 + 欠路由安全网；
-  │                    成功 → 得到 tier/置信度，跳过 ②（③④ 仍然叠加）；
-  │                    失败/超时 → 走本地启发式 ②③④
-  │
-  ├─② 分档 band     ── 按长度/代码块/附件把消息归入 5 个 band，得到基础 tier
-  │
-  ├─③ flag 计算     ── 从文本算出 5 个布尔 flag（高风险/调试/长上下文/仓库架构/严格格式）
-  │
-  ├─④ flag 升级     ── flag 命中则把 tier 往上抬（只升不降）
-  │
-  └─⑤ 落地解析      ── 置信度门 + 就近取配置档位 + KV-cache 粘滞 → 返回 modelOverride / providerOverride
+插件侧 (index.ts)                          中央侧 (central/server.ts)
+  ① 图片短路（有图不覆盖，直接返回）
+  ⓪ POST /v1/route {tenantId,             ── 嵌入消息（外部 embedding 服务）
+     sessionKey, message, attachmentCount}    ② 语义分类：锚点余弦 + margin 升级
+        │                                        + 欠路由安全网（semantic.ts）
+        │                                     ③ 置信度门（低置信 → defaultTier）
+        │                                     ④ flag 升级（高风险/调试+长上下文…）
+        │                                     ⑤ 决策落库（无明文）+ 返回
+        │                                        {tier, decisionId, ...}
+        ├─ 成功 → 拿到抽象档位
+        └─ 失败/超时 → 本地启发式（router.ts classifyTurn，②③④ 的规则版）
+  ⑥ 落地：就近取配置档位 + KV-cache 粘滞 → modelOverride/providerOverride
+  ⑦ debug 日志带 decisionId（与本地会话记录并排，可回联中央轨迹）
 ```
 
-对应的函数调用链：
+对应的调用链：
 
 ```
-index.ts  before_model_resolve 回调
-  → AnchorCache.get()            // 锚点向量，每进程只 embed 一次（首轮批量调一次）
-  → embedTexts()                 // embeddings-client.ts：⓪ HTTP 拿消息向量（可选）
-      成功 → classifyEmbedding() // semantic.ts：锚点余弦 + margin 升级 + 欠路由安全网
-           → semanticRouteDecision() // router.ts：置信度门 + flag 升级
-      失败 → classifyTurn()      // router.ts：② + ③ + ④ 本地启发式
-  → SessionTierStore.get()       // 读上一轮服务的档位（粘滞用）
-  → resolveRoute()               // router.ts：⑤
-      → nearestConfiguredTier()
-      → applySticky()            // ⑤ 的 KV-cache 粘滞
-  → SessionTierStore.set()       // 记录本轮服务的档位
+插件  index.ts before_model_resolve
+  → routeRemote()               // central-client.ts：POST /v1/route
+      失败 → classifyTurn()     // router.ts：本地启发式兜底
+  → SessionTierStore.get()      // 读上一轮服务的档位（粘滞用）
+  → resolveRoute()              // router.ts：就近取档 + applySticky()
+  → SessionTierStore.set()      // 记录本轮服务的档位
+
+中央  central/server.ts Central.route
+  → embedTexts()                // embeddings-client.ts：调外部 embedding 服务
+  → classifyEmbedding()         // semantic.ts：锚点余弦 + margin + 安全网
+  → semanticRouteDecision()     // router.ts：置信度门 + flag 升级
+      （embedding 失败 → classifyTurn() 中央侧启发式，照常落库）
+  → CentralStore.insertDecision // central/store.ts：无明文决策记录
 ```
+
+**职责切分**：中央拥有一切"决策"（策略改一处全网生效，per-tenant 数据集中给
+自学习供料）；插件只保留中央宕机也必须活着的（启发式兜底）、天然属于端上的
+（档位→模型映射、KV-cache 粘滞、图片短路）。分类逻辑只有一份源码
+（`semantic.ts`/`router.ts`），中央与插件兜底共用，不会漂移。
+
+**隐私与可追踪**（用户定案：接口传明文，库不存明文）：
+
+- `central/store.ts` 的 schema **没有消息文本列**——只存派生数据：字符数、flag、
+  4 类概率、margin、`base→gated→final` 三段档位轨迹、最近 3 个锚点及相似度、
+  嵌入向量（未来自学习的原料）、策略版本号、延迟。
+- 每次决策返回 `decisionId`；插件把它打进 debug 日志，与本地会话记录（明文所在地）
+  并排。查问题的四步手册见 README "Debugging runbook"。
+- 排查接口：`GET /v1/decisions/{id}`（完整轨迹+锚点画像+评分）、
+  `GET /v1/decisions?tenantId&sessionKey`（会话决策列表）、
+  `GET /v1/stats?tenantId`（档位/band/评分聚合）、`POST /v1/feedback`（点赞点踩，
+  自学习的反馈流）。
 
 会话状态（`session-store.ts`）：`SessionTierStore` 是有界的 per-session
 内存表，记录每个会话上一轮**实际服务的档位**，TTL 30 分钟、按容量 LRU 淘汰。丢失
 一条只是让下一轮自由重路由（安全，无用户可见数据）。
 
-语义分类（阶段 ⓪，`semantic.ts` + `embeddings-client.ts`）——**所有路由逻辑都在
-插件内，外部只部署通用 embedding 模型**：
-
-- 每个档位拥有一组**锚点样例**（`TIER_ANCHOR_TEXTS`，中英混合，取材自 OpenSquilla
-  `router.runtime.yaml` 的 tier intents：c0 琐碎确认、c1 常规有界任务、c2 调试/
-  多步分析、c3 架构/高风险）。锚点向量每进程只算一次（一次批量 embedding 调用），
-  失败下轮重试，期间走启发式。
-- 每轮一次 HTTP embedding 调用拿消息向量，插件内做余弦相似度：每档取 top-2 锚点
-  相似度均值 → softmax 得 4 类概率 → **margin 升级**（top1-top2 < 0.10 升一档）→
-  **欠路由安全网**（P(c2)+P(c3) > 0.45 时至少 c2）——两条阈值与
-  `router.runtime.yaml` 一致。
-- 之后回到 `router.ts`：**置信度门**（低于 `confidenceThreshold` 回落
-  `defaultTier`）→ **flag 升级照常叠加**（语义分类不懂"删库上生产"的风险语义
-  权重，关键词规则仍是硬保障）→ 就近取档 → 粘滞。
-- 降级链与 OpenSquilla 进程内一致：任何失败（超时/网络/5xx/格式不符）静默回落
-  本地启发式，路由永不因 embedding 服务慢而阻塞（默认 2s 超时）。
-- 这是"简短但难"问题的解法：`"容灾架构怎么选"` 只有 8 个字符，长度启发式判 c0，
-  语义分类正确路由到 c3（已在真实 HTTP 链路上验证）。
+语义分类（`semantic.ts`，跑在中央）：每个档位一组**锚点样例**（中英混合，取材自
+OpenSquilla tier intents），锚点向量每进程只 embed 一次；每轮拿消息向量后做
+余弦相似度：每档取 top-2 锚点均值 → softmax 得 4 类概率 → **margin 升级**
+（top1-top2 < 0.10 升一档）→ **欠路由安全网**（P(c2)+P(c3) > 0.45 时至少 c2），
+阈值与 `router.runtime.yaml` 一致。这是"简短但难"问题的解法：
+`"容灾架构怎么选"` 长度启发式判 c0，语义分类正确路由 c3（真实 HTTP 链路验证过）。
 
 档位命名：`c0`（最便宜/最快）→ `c1` → `c2` → `c3`（最强）。对应 OpenSquilla 的
 路由类 `R0`–`R3`。
@@ -312,16 +316,18 @@ core 在 `src/agents/embedded-agent-runner/run/setup.ts` 消费这个返回值�
 
 ## 与 OpenSquilla 完整版的差距（PoC 范围）
 
-- ~~ML 语义分类~~：**已通过阶段 ⓪ 接入**——外部只部署通用 embedding 模型，分类
-  逻辑（锚点相似度 + 后处理）全在插件内。与 OpenSquilla 的差别：它用的是在真实
-  流量上**训练过**的 LightGBM/MLP 集成（吃 390 维特征），本插件用的是**零训练**的
-  锚点相似度分类；准确率上限低一些，但换来零 Python、零私有模型资产、可随时改
-  锚点调节行为。
-- **训练后的分类头**：想进一步提准，可在插件侧把锚点换成用户自己流量上训练的
-  轻量分类头（嵌入向量 + 逻辑回归权重可以直接放配置/文件里，仍是纯 TS 推理）。
+- ~~ML 语义分类~~：**已接入（中央服务）**。与 OpenSquilla 的差别：它用的是在
+  真实流量上**训练过**的 LightGBM/MLP 集成（吃 390 维特征），本方案用的是
+  **零训练**的锚点相似度分类；准确率上限低一些，但换来零 Python、零私有模型
+  资产、锚点即普通字符串可随时调整。
+- **训练后的分类头**：想进一步提准，可在中央把锚点换成自己流量上训练的轻量
+  分类头（嵌入向量 + 权重放文件即可，仍是纯 TS 推理）——决策记录里已经在存
+  嵌入向量和反馈评分，训练数据在自然积累。
+- **自学习/校准闭环**：数据面已就位（决策轨迹 + feedback 流 + 嵌入向量，
+  per-tenant 隔离），聚合/训练/晋升的闭环未实现——对应 OpenSquilla 的
+  calibration 与 self_learning 两套方法论，可按其夹紧/门/回滚设计逐步补上。
 - **提示词策略 P0/P2 与思考档位**：未实现（需要 `before_prompt_build` 注入）。
-- **历史感知特征**：上一轮助手回复/usage 不参与分类（`before_model_resolve`
-  钩子拿不到）；分档只看当前消息，粘滞负责跨轮连续性。
-- **自学习飞轮**：无（OpenSquilla 的重训管线是 Python 侧能力，本方案不依赖它）。
+- **历史感知特征**：分档只看当前消息；粘滞负责跨轮连续性。中央存有 per-session
+  决策历史，未来可作为分类特征接入。
 
-embedding 模型部署方式见 `README.md`（TEI/Ollama/任意 OpenAI 兼容服务均可）。
+中央服务与 embedding 模型的部署方式见 `README.md`。

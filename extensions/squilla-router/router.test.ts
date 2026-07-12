@@ -202,27 +202,21 @@ describe("sticky routing (KV-cache-aware)", () => {
 });
 
 describe("semanticRouteDecision", () => {
-  const mlConfig: SquillaRouterConfig = {
-    ...fullConfig,
-    ml: {
-      url: "http://ml/v1/embeddings",
-      model: "bge-small-zh-v1.5",
-      timeoutMs: 2_000,
-      confidenceThreshold: 0.5,
-    },
-  };
+  const gate = { defaultTier: "c1", confidenceThreshold: 0.5 } as const;
 
   it("uses the semantic tier when confidence clears the gate", () => {
-    const decision = semanticRouteDecision({ tier: "c3", confidence: 0.9 }, "普通问题", mlConfig);
+    const decision = semanticRouteDecision({ tier: "c3", confidence: 0.9 }, "普通问题", gate);
     expect(decision.band).toBe("semantic");
     expect(decision.tier).toBe("c3");
     expect(decision.routeClass).toBe("R3");
+    expect(decision.gatedTier).toBe("c3");
     expect(decision.flagUpgraded).toBe(false);
   });
 
   it("flattens a low-confidence answer to defaultTier", () => {
-    const decision = semanticRouteDecision({ tier: "c3", confidence: 0.3 }, "普通问题", mlConfig);
+    const decision = semanticRouteDecision({ tier: "c3", confidence: 0.3 }, "普通问题", gate);
     expect(decision.tier).toBe("c1");
+    expect(decision.gatedTier).toBe("c1");
     expect(decision.routeClass).toBe("R1");
   });
 
@@ -230,19 +224,20 @@ describe("semanticRouteDecision", () => {
     const decision = semanticRouteDecision(
       { tier: "c0", confidence: 0.9 },
       "把这个删除了直接部署到生产",
-      mlConfig,
+      gate,
     );
     expect(decision.flags.highRisk).toBe(true);
+    expect(decision.gatedTier).toBe("c0");
     expect(decision.tier).toBe("c2");
     expect(decision.flagUpgraded).toBe(true);
   });
 
   it("sticky still applies over a semantic decision", () => {
     const stickyConfig: SquillaRouterConfig = {
-      ...mlConfig,
+      ...fullConfig,
       sticky: { enabled: true, maxUserLen: 200 },
     };
-    const decision = semanticRouteDecision({ tier: "c0", confidence: 0.95 }, "go on", stickyConfig);
+    const decision = semanticRouteDecision({ tier: "c0", confidence: 0.95 }, "go on", gate);
     const route = resolveRoute(stickyConfig, decision, { lastTier: "c2", promptLen: 5 });
     expect(route?.resolvedTier).toBe("c2");
     expect(route?.stuck).toBe(true);
@@ -270,31 +265,26 @@ describe("parseRouterConfig", () => {
     expect(config?.sticky).toEqual({ enabled: false, maxUserLen: 50 });
   });
 
-  it("parses the ml block with defaults and drops it without a url", () => {
-    const withMl = parseRouterConfig({
+  it("parses the central block with defaults and drops it without a url", () => {
+    const withCentral = parseRouterConfig({
       tiers: { c1: { model: "a" } },
-      ml: { url: "http://ml:8080/v1/embeddings", apiKey: "k" },
+      central: { url: "http://router-box:8710/v1/route", apiKey: "k" },
     });
-    expect(withMl?.ml).toEqual({
-      url: "http://ml:8080/v1/embeddings",
-      model: "bge-small-zh-v1.5",
+    expect(withCentral?.central).toEqual({
+      url: "http://router-box:8710/v1/route",
+      tenantId: "default",
       apiKey: "k",
       timeoutMs: 2_000,
-      confidenceThreshold: 0.5,
     });
 
     const explicit = parseRouterConfig({
       tiers: { c1: { model: "a" } },
-      ml: { url: "http://ml", model: "bge-m3", timeoutMs: 800, confidenceThreshold: 0.7 },
+      central: { url: "http://c", tenantId: "team-a", timeoutMs: 800 },
     });
-    expect(explicit?.ml).toMatchObject({
-      model: "bge-m3",
-      timeoutMs: 800,
-      confidenceThreshold: 0.7,
-    });
+    expect(explicit?.central).toMatchObject({ tenantId: "team-a", timeoutMs: 800 });
 
-    const noUrl = parseRouterConfig({ tiers: { c1: { model: "a" } }, ml: { apiKey: "k" } });
-    expect(noUrl?.ml).toBeUndefined();
+    const noUrl = parseRouterConfig({ tiers: { c1: { model: "a" } }, central: { apiKey: "k" } });
+    expect(noUrl?.central).toBeUndefined();
   });
 
   it("rejects configs without any usable tier", () => {

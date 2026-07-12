@@ -1,50 +1,49 @@
 # SquillaRouter (PoC)
 
-Per-turn model routing for OpenClaw, ported from OpenSquilla's SquillaRouter.
-Before each agent run, the plugin classifies the prompt into a tier (`c0`-`c3`,
-cheap to strong) and overrides the model for that run via the
-`before_model_resolve` hook.
+Per-turn model routing for OpenClaw. The plugin is a **thin client of a
+central routing service**: before each agent run it POSTs the prompt to the
+service, gets back an abstract tier (`c0`-`c3`, cheap to strong), maps it to a
+locally configured model, and overrides the run via `before_model_resolve`.
 
-Two classification paths, same ML-first/heuristic-backup chain OpenSquilla
-runs in-process — with ALL routing logic inside this plugin. The only external
-piece is a generic embedding model:
+```
+openclaw plugin (thin client)          central service (all routing logic)
+  image bypass                           embed message (external embeddings box)
+  tier -> model mapping        POST      anchor-similarity classification
+  KV-cache sticky            ------->    margin upgrade / under-routing safety
+  heuristic fallback         <-------    confidence gate / flag upgrades
+  logs decisionId              tier      decision trail store (NO plaintext)
+                            decisionId   feedback intake for self-learning
+```
 
-1. **Semantic** (optional, `config.ml`): embed the prompt via any
-   OpenAI-compatible `/v1/embeddings` endpoint (TEI, vLLM, Ollama, or a cloud
-   embeddings API — deploy `bge-small-zh-v1.5` or any bilingual embedding
-   model), then classify in-plugin by cosine similarity against per-tier
-   anchor prompts (`semantic.ts`), with OpenSquilla's margin-upgrade and
-   under-routing-safety rules applied in probability space. One embedding
-   call per turn; anchors are embedded once per gateway process.
-2. **Local heuristics** (always available): the dependency-free rule layer
-   below, used when `ml` is not configured or the embedding call fails or
-   times out.
+Division of labor: the central box owns every routing decision so policy
+changes land in one place; the plugin keeps only what must survive a central
+outage (heuristic fallback), is inherently local (tier-to-model mapping,
+KV-cache sticky, image bypass), or must not leave the machine (attachments).
 
-Heuristic sources ported (thresholds and keyword lists kept equivalent):
+## Privacy and traceability contract
 
-- bands: opensquilla `src/opensquilla/engine/routing/heuristic.py`
-- flags: v4 bundle `runtime_src/src/router/flags.py` + `router.runtime.yaml`
-- flag upgrades: v4 bundle `predictor.py` `_apply_flag_overrides`
+- The wire carries the message text (internal deployment).
+- The central store **never** persists it: the `decisions` schema has no text
+  column — only derived data (char length, flags, probabilities, the
+  base -> gated -> final tier trail, nearest anchors, the embedding vector).
+- Every route response carries a `decisionId`. The plugin logs it next to the
+  session transcript — the transcript is where plaintext lives, the central
+  trail is where the reasoning lives, and the id joins them.
 
-## Routing behavior
+### Debugging runbook (查问题)
 
-1. Band classification: very long or multi-file input -> `c3`; code fences,
-   long material, or non-image attachments -> `c2`; short plain text -> `c0`;
-   medium plain text -> `c1`; ambiguous mid-length text -> the configured
-   `defaultTier`.
-2. Flag upgrades (never downgrades): high-risk keywords (deploy, rollback,
-   production, 生产, 删除, ...) -> at least `c2`; debug signals combined with
-   long context -> at least `c2`; repo/architecture keywords -> at least `c1`.
-3. Image turns are never overridden — the session's configured model stays.
-4. Unconfigured tiers resolve to the nearest configured tier, preferring
-   equal-or-higher so a missing tier never silently downgrades a turn.
-5. KV-cache-aware sticky routing (on by default): on a short continuation turn,
-   never route below the tier the session was already on. Switching to a cheaper
-   model would drop the provider-side prompt cache and re-pay the whole context
-   uncached, which usually costs more than the per-token saving. Upgrades are
-   still allowed — a genuinely harder turn is worth the cache miss.
+1. Start from metrics: `GET /v1/stats?tenantId=...` — tier/band distribution
+   and downvote counts per tenant.
+2. Find the turn: `GET /v1/decisions?tenantId=...&sessionKey=...` lists a
+   session's recent decisions newest-first.
+3. Explain the decision: `GET /v1/decisions/{decisionId}` returns the full
+   trail — classifier tier, gated tier, final tier, probabilities, margin,
+   triggered flags, and `topAnchors` ("which of our anchor prompts the message
+   resembled"), which explains the semantics without storing the message.
+4. Need the actual text? Grep the _client_ gateway log for the decisionId —
+   the debug line sits next to the session transcript on the user's machine.
 
-## Configuration
+## Configuration (plugin side)
 
 ```json
 {
@@ -61,12 +60,11 @@ Heuristic sources ported (thresholds and keyword lists kept equivalent):
             "c3": { "model": "z-ai/glm-5.2" }
           },
           "sticky": { "enabled": true, "maxUserLen": 200 },
-          "ml": {
-            "url": "http://ml-box:8080/v1/embeddings",
-            "model": "bge-small-zh-v1.5",
+          "central": {
+            "url": "http://router-box:8710/v1/route",
+            "tenantId": "team-a",
             "apiKey": "<token>",
-            "timeoutMs": 2000,
-            "confidenceThreshold": 0.5
+            "timeoutMs": 2000
           }
         }
       }
@@ -75,41 +73,54 @@ Heuristic sources ported (thresholds and keyword lists kept equivalent):
 }
 ```
 
-Tiers without a `model` are skipped. If no tier is usable the plugin logs a
-warning and disables itself for the session.
+- Tiers without a `model` are skipped; unconfigured tiers resolve to the
+  nearest configured tier, preferring equal-or-higher (no silent downgrades).
+- `central.tenantId` keys per-user data on the service (default `"default"`).
+- On any central failure/timeout the turn routes via the local heuristic and a
+  throttled warning is logged; routing never blocks on the service.
+- `sticky` blocks KV-cache-busting downgrades on short continuation turns
+  (see HEURISTICS.md §5.3); it applies over central and fallback decisions.
+- Image turns are never overridden.
 
-`ml` enables semantic routing (all optional except `url`):
+## Deploying the central service
 
-- `url` — OpenAI-compatible embeddings endpoint on your model server.
-- `model` (default `bge-small-zh-v1.5`) — model name sent in the request; use
-  a bilingual embedding model, the anchors are zh+en.
-- `apiKey` — sent as `Authorization: Bearer <apiKey>` when set.
-- `timeoutMs` (default 2000) — on timeout the turn silently uses the local
-  heuristic; routing never blocks on a slow embeddings box.
-- `confidenceThreshold` (default 0.5) — semantic answers below this confidence
-  flatten to `defaultTier` (OpenSquilla's confidence gate). Flag upgrades and
-  sticky routing apply on top of both paths.
+The service is dependency-free Node (node:sqlite storage). Bundle and run:
 
-Failures are logged at warn level at most once per minute; each affected turn
-still routes via the heuristic.
+```bash
+# in the openclaw repo
+node_modules/.bin/esbuild extensions/squilla-router/central/main.ts \
+  --bundle --format=esm --platform=node --external:node:sqlite \
+  --outfile=squilla-central.mjs
 
-Deploying the embedding model (on the ML box) — any OpenAI-compatible server
-works, for example text-embeddings-inference:
+# on the router box (needs an OpenAI-compatible embeddings endpoint)
+SQUILLA_EMBEDDINGS_URL=http://ml-box:8080/v1/embeddings \
+SQUILLA_EMBEDDINGS_MODEL=bge-small-zh-v1.5 \
+SQUILLA_CENTRAL_TOKEN=<token> \
+SQUILLA_DB_PATH=/var/lib/squilla/central.sqlite \
+SQUILLA_HOST=0.0.0.0 SQUILLA_PORT=8710 \
+node squilla-central.mjs
+```
+
+Optional env: `SQUILLA_EMBEDDINGS_API_KEY`, `SQUILLA_EMBEDDINGS_TIMEOUT_MS`,
+`SQUILLA_DEFAULT_TIER` (c0-c3), `SQUILLA_CONFIDENCE_THRESHOLD` (0-1),
+`SQUILLA_POLICY_VERSION` (stamped on every decision for reproducibility).
+
+The embeddings endpoint is any OpenAI-compatible server, e.g.:
 
 ```bash
 docker run -p 8080:80 ghcr.io/huggingface/text-embeddings-inference:cpu-latest \
   --model-id BAAI/bge-small-zh-v1.5
-# then: url = http://ml-box:8080/v1/embeddings
 ```
 
-or Ollama (`ollama pull bge-m3`, `url = http://ml-box:11434/v1/embeddings`,
-`model = "bge-m3"`), or a hosted embeddings API.
+If embeddings fail, the central service still answers using the heuristic
+band rules (recorded with the heuristic band in the trail), so clients only
+fall back to their local heuristic when the central service itself is down.
 
-`sticky` controls KV-cache-aware downgrade blocking (defaults shown above):
+## Classification internals
 
-- `enabled` — set `false` to route every turn purely by classification,
-  ignoring the warm cache. Leave `true` unless you have no provider-side prompt
-  caching to protect.
-- `maxUserLen` — a turn whose prompt is at most this many characters counts as a
-  "continuation" and cannot downgrade below the session's current tier. Longer
-  turns are treated as genuinely new work and may re-route freely.
+See `HEURISTICS.md` for the full walkthrough. Sources ported from OpenSquilla
+(thresholds and keyword lists kept equivalent): bands from
+`engine/routing/heuristic.py`, flags from the v4 bundle `flags.py` +
+`router.runtime.yaml`, flag upgrades from `predictor.py`
+`_apply_flag_overrides`, margin upgrade / under-routing safety from the v4
+postprocess, sticky from `_apply_sticky_tier`.

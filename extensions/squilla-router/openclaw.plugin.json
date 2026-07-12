@@ -42,16 +42,15 @@
           "maxUserLen": { "type": "integer", "minimum": 0 }
         }
       },
-      "ml": {
+      "central": {
         "type": "object",
         "additionalProperties": false,
         "required": ["url"],
         "properties": {
           "url": { "type": "string" },
-          "model": { "type": "string" },
+          "tenantId": { "type": "string" },
           "apiKey": { "type": "string" },
-          "timeoutMs": { "type": "integer", "minimum": 1 },
-          "confidenceThreshold": { "type": "number", "minimum": 0, "maximum": 1 }
+          "timeoutMs": { "type": "integer", "minimum": 1 }
         }
       }
     }

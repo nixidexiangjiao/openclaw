@@ -1,9 +1,17 @@
 // Minimal OpenAI-compatible embeddings client (POST {url} {model, input}).
-// Works against TEI, vLLM, Ollama, or any hosted embeddings API. The caller
-// treats any failure as "use the local heuristic instead", so this module
-// never throws — it returns a closed ok/failed result with the reason.
+// Works against TEI, vLLM, Ollama, or any hosted embeddings API. Used by the
+// central routing service (central/server.ts). The caller treats any failure
+// as "fall back to the heuristic", so this module never throws — it returns a
+// closed ok/failed result with the reason.
 
-import type { MlRouterConfig } from "./router.js";
+export type EmbeddingsConfig = {
+  /** OpenAI-compatible embeddings endpoint, e.g. http://ml-box:8080/v1/embeddings */
+  url: string;
+  /** Model name sent in the request body; must be bilingual for zh+en anchors. */
+  model: string;
+  apiKey?: string;
+  timeoutMs: number;
+};
 
 export type EmbedResult = { ok: true; vectors: number[][] } | { ok: false; reason: string };
 
@@ -43,7 +51,7 @@ function parseVectors(body: unknown, expectedCount: number): number[][] | undefi
 }
 
 export async function embedTexts(
-  config: MlRouterConfig,
+  config: EmbeddingsConfig,
   texts: readonly string[],
   fetchFn: typeof fetch = fetch,
 ): Promise<EmbedResult> {

@@ -54,31 +54,28 @@ export type StickyConfig = {
   maxUserLen: number;
 };
 
-// Embedding-backed semantic routing. Only the embedding MODEL is deployed
-// externally (any OpenAI-compatible /v1/embeddings server); every bit of
-// routing logic — anchors, scoring, post-processing — runs in this plugin.
-// Any failure falls back to the local heuristic.
-export type MlRouterConfig = {
-  /** OpenAI-compatible embeddings endpoint, e.g. http://ml-box:8080/v1/embeddings */
+// Central routing service (central/server.ts, deployed on your ML box). The
+// plugin sends the message and receives an abstract tier; every bit of routing
+// intelligence — embedding, anchors, gates, flags — runs centrally. Any failure
+// falls back to the local heuristic so routing never blocks on the service.
+export type CentralConfig = {
+  /** Central route endpoint, e.g. http://router-box:8710/v1/route */
   url: string;
-  /** Model name sent in the request body; must be bilingual for zh+en anchors. */
-  model: string;
+  /** Tenant identifier the central service keys per-user data by. */
+  tenantId: string;
   apiKey?: string;
   timeoutMs: number;
-  /** Below this confidence the decision flattens to defaultTier (OpenSquilla confidence gate). */
-  confidenceThreshold: number;
 };
 
 export type SquillaRouterConfig = {
   tiers: Partial<Record<Tier, TierTarget>>;
   defaultTier: Tier;
   sticky: StickyConfig;
-  ml?: MlRouterConfig;
+  central?: CentralConfig;
 };
 
-const ML_DEFAULT_TIMEOUT_MS = 2_000;
-const ML_DEFAULT_CONFIDENCE_THRESHOLD = 0.5;
-const ML_DEFAULT_MODEL = "bge-small-zh-v1.5";
+const CENTRAL_DEFAULT_TIMEOUT_MS = 2_000;
+const CENTRAL_DEFAULT_TENANT = "default";
 
 // Default matches OpenSquilla's sticky_tier.max_user_len. Enabled by default
 // here (unlike OpenSquilla's shipped default-off): OpenSquilla gated it off
@@ -242,18 +239,24 @@ export function classifyTurn(message: string, attachmentCount = 0): RouteDecisio
   };
 }
 
+/** Confidence-gate parameters for the semantic pipeline (central-side config). */
+export type SemanticGate = { defaultTier: Tier; confidenceThreshold: number };
+
+/** RouteDecision plus the intermediate tier, kept for the decision trail. */
+export type SemanticDecision = RouteDecision & { gatedTier: Tier };
+
 // Turn an embedding-based semantic classification into a route decision.
-// Two local guards apply on top of the semantic tier, mirroring the heuristic
+// Two guards apply on top of the semantic tier, mirroring the heuristic
 // path's semantics: the confidence gate flattens a low-confidence answer to
 // defaultTier, and the flag upgrades still lift risk-signal turns afterwards
 // (a gated tier with a "delete production" keyword must not stay cheap).
 export function semanticRouteDecision(
   semantic: { tier: Tier; confidence: number },
   message: string,
-  config: SquillaRouterConfig,
-): RouteDecision {
-  const threshold = config.ml?.confidenceThreshold ?? ML_DEFAULT_CONFIDENCE_THRESHOLD;
-  const gatedTier = semantic.confidence < threshold ? config.defaultTier : semantic.tier;
+  gate: SemanticGate,
+): SemanticDecision {
+  const gatedTier =
+    semantic.confidence < gate.confidenceThreshold ? gate.defaultTier : semantic.tier;
   const flags = computeFlags(message);
   const tier = applyFlagUpgrades(gatedTier, flags);
   return {
@@ -263,6 +266,7 @@ export function semanticRouteDecision(
     confidence: semantic.confidence,
     flags,
     flagUpgraded: tier !== gatedTier,
+    gatedTier,
   };
 }
 
@@ -376,16 +380,16 @@ export function parseRouterConfig(
     typeof rawDefault === "string" && (TEXT_TIERS as readonly string[]).includes(rawDefault)
       ? (rawDefault as Tier)
       : "c1";
-  const ml = parseMlConfig(pluginConfig?.ml);
+  const central = parseCentralConfig(pluginConfig?.central);
   return {
     tiers,
     defaultTier,
     sticky: parseStickyConfig(pluginConfig?.sticky),
-    ...(ml ? { ml } : {}),
+    ...(central ? { central } : {}),
   };
 }
 
-function parseMlConfig(raw: unknown): MlRouterConfig | undefined {
+function parseCentralConfig(raw: unknown): CentralConfig | undefined {
   if (typeof raw !== "object" || raw === null) {
     return undefined;
   }
@@ -394,25 +398,18 @@ function parseMlConfig(raw: unknown): MlRouterConfig | undefined {
   if (!url) {
     return undefined;
   }
-  const model =
-    typeof record.model === "string" && record.model.trim()
-      ? record.model.trim()
-      : ML_DEFAULT_MODEL;
+  const tenantId =
+    typeof record.tenantId === "string" && record.tenantId.trim()
+      ? record.tenantId.trim()
+      : CENTRAL_DEFAULT_TENANT;
   const apiKey = typeof record.apiKey === "string" && record.apiKey ? record.apiKey : undefined;
   const timeoutMs =
     typeof record.timeoutMs === "number" &&
     Number.isFinite(record.timeoutMs) &&
     record.timeoutMs > 0
       ? Math.floor(record.timeoutMs)
-      : ML_DEFAULT_TIMEOUT_MS;
-  const confidenceThreshold =
-    typeof record.confidenceThreshold === "number" &&
-    Number.isFinite(record.confidenceThreshold) &&
-    record.confidenceThreshold >= 0 &&
-    record.confidenceThreshold <= 1
-      ? record.confidenceThreshold
-      : ML_DEFAULT_CONFIDENCE_THRESHOLD;
-  return { url, model, ...(apiKey ? { apiKey } : {}), timeoutMs, confidenceThreshold };
+      : CENTRAL_DEFAULT_TIMEOUT_MS;
+  return { url, tenantId, ...(apiKey ? { apiKey } : {}), timeoutMs };
 }
 
 function parseStickyConfig(raw: unknown): StickyConfig {
