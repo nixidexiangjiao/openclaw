@@ -41,7 +41,7 @@ function parseRoute(body: unknown): CentralRoute | undefined {
 
 export async function routeRemote(
   config: CentralConfig,
-  request: { sessionKey: string; message: string; attachmentCount: number },
+  request: { sessionKey: string; profile: string; message: string; attachmentCount: number },
   fetchFn: typeof fetch = fetch,
 ): Promise<CentralRouteResult> {
   let response: Response;
@@ -55,6 +55,9 @@ export async function routeRemote(
       body: JSON.stringify({
         tenantId: config.tenantId,
         sessionKey: request.sessionKey,
+        // Which virtual routing id triggered this turn, so central can keep
+        // per-profile stats and later serve per-profile policy.
+        profile: request.profile,
         message: request.message,
         attachmentCount: request.attachmentCount,
       }),

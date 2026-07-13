@@ -4,7 +4,7 @@
     "onStartup": true
   },
   "name": "SquillaRouter",
-  "description": "Routes each turn to a configured model tier using OpenSquilla heuristics.",
+  "description": "Routes turns on virtual routing model ids to a configured model tier via a central routing service.",
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
@@ -17,22 +17,34 @@
           "model": { "type": "string" },
           "provider": { "type": "string" }
         }
+      },
+      "profile": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["tiers"],
+        "properties": {
+          "defaultTier": {
+            "type": "string",
+            "enum": ["c0", "c1", "c2", "c3"]
+          },
+          "tiers": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "c0": { "$ref": "#/$defs/tierTarget" },
+              "c1": { "$ref": "#/$defs/tierTarget" },
+              "c2": { "$ref": "#/$defs/tierTarget" },
+              "c3": { "$ref": "#/$defs/tierTarget" }
+            }
+          }
+        }
       }
     },
     "properties": {
-      "defaultTier": {
-        "type": "string",
-        "enum": ["c0", "c1", "c2", "c3"]
-      },
-      "tiers": {
+      "profiles": {
+        "description": "Keyed by the virtual routing model id that triggers routing (e.g. \"squilla/auto\"). Each profile maps abstract tiers to real models.",
         "type": "object",
-        "additionalProperties": false,
-        "properties": {
-          "c0": { "$ref": "#/$defs/tierTarget" },
-          "c1": { "$ref": "#/$defs/tierTarget" },
-          "c2": { "$ref": "#/$defs/tierTarget" },
-          "c3": { "$ref": "#/$defs/tierTarget" }
-        }
+        "additionalProperties": { "$ref": "#/$defs/profile" }
       },
       "sticky": {
         "type": "object",

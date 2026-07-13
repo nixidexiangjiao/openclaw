@@ -1,9 +1,13 @@
 # SquillaRouter (PoC)
 
-Per-turn model routing for OpenClaw. The plugin is a **thin client of a
-central routing service**: before each agent run it POSTs the prompt to the
-service, gets back an abstract tier (`c0`-`c3`, cheap to strong), maps it to a
-locally configured model, and overrides the run via `before_model_resolve`.
+Per-turn model routing for OpenClaw, triggered by **virtual routing model
+ids**. Operators define routing profiles in config, each keyed by a virtual
+`provider/modelId` (e.g. `squilla/auto`). A session opts into smart routing by
+selecting that virtual model; sessions on real models are never intercepted.
+On each routed turn the plugin POSTs the prompt (plus the profile key) to a
+**central routing service**, gets back an abstract tier (`c0`-`c3`, cheap to
+strong), maps it through the profile's tier table to a real model, and
+overrides the run via `before_model_resolve`.
 
 The wire contract is **generic**: the client depends only on the abstract
 `tier` plus a `decisionId` trace handle. Any richer, algorithm-specific data
@@ -12,22 +16,22 @@ algorithm behind the service can be swapped with no plugin change.
 
 ```
 openclaw plugin (thin client)          central service (all routing logic)
-  image bypass                           embed message (external embeddings box)
-  tier -> model mapping        POST      anchor-similarity classification
-  KV-cache sticky            ------->    margin upgrade / under-routing safety
-  crude size-based fallback  <-------    confidence gate / flag upgrades
-  logs decisionId              tier      decision trail store (NO plaintext)
-                            decisionId   feedback intake for self-learning
+  virtual-id trigger gate                embed message (external embeddings box)
+  tier -> model per profile     POST     anchor-similarity classification
+  KV-cache sticky             ------->   margin upgrade / under-routing safety
+  crude size-based fallback   <-------   confidence gate / flag upgrades
+  image -> strongest tier       tier     decision trail store (NO plaintext)
+  logs decisionId            decisionId  feedback intake for self-learning
 ```
 
 Division of labor: the central box owns every routing decision so policy
 changes land in one place; the plugin holds no routing intelligence. It keeps
-only the in-process override, what is inherently local (tier-to-model mapping,
-KV-cache sticky, image bypass), and a crude size-based fallback for when
-central is unreachable — deliberately NOT a copy of the central rule layer
-(that would duplicate policy and drift). All plugin config comes from
-`openclaw.json`; the central control plane (tokenhub) feeds the central
-service only, never the plugin.
+only the trigger gate and in-process override, what is inherently local
+(profile tier-to-model mapping, KV-cache sticky, image handling), and a crude
+size-based fallback for when central is unreachable — deliberately NOT a copy
+of the central rule layer (that would duplicate policy and drift). All plugin
+config comes from `openclaw.json`; the central control plane (tokenhub) feeds
+the central service only, never the plugin.
 
 ## Privacy and traceability contract
 
@@ -61,12 +65,23 @@ service only, never the plugin.
       "squilla-router": {
         "enabled": true,
         "config": {
-          "defaultTier": "c1",
-          "tiers": {
-            "c0": { "model": "deepseek/deepseek-v4-flash" },
-            "c1": { "model": "deepseek/deepseek-v4-pro" },
-            "c2": { "model": "z-ai/glm-5.2" },
-            "c3": { "model": "z-ai/glm-5.2" }
+          "profiles": {
+            "squilla/auto": {
+              "defaultTier": "c1",
+              "tiers": {
+                "c0": { "model": "deepseek/deepseek-v4-flash" },
+                "c1": { "model": "deepseek/deepseek-v4-pro" },
+                "c2": { "model": "z-ai/glm-5.2" },
+                "c3": { "model": "z-ai/glm-5.2" }
+              }
+            },
+            "squilla/auto-max": {
+              "defaultTier": "c2",
+              "tiers": {
+                "c2": { "model": "z-ai/glm-5.2" },
+                "c3": { "model": "z-ai/glm-5.2", "provider": "zai" }
+              }
+            }
           },
           "sticky": { "enabled": true, "maxUserLen": 200 },
           "central": {
@@ -82,16 +97,25 @@ service only, never the plugin.
 }
 ```
 
+- **Trigger**: routing runs only when the session's selected model matches a
+  `profiles` key — matched as `provider/modelId` first, then as the bare
+  modelId (OpenClaw model ids may themselves contain `/`). Multiple virtual
+  ids can coexist, each with its own tier table. The virtual id never reaches
+  model resolution: once matched, the plugin always overrides.
 - Tiers without a `model` are skipped; unconfigured tiers resolve to the
   nearest configured tier, preferring equal-or-higher (no silent downgrades).
-- `central.tenantId` keys per-user data on the service (default `"default"`).
+- `central.tenantId` keys per-user data on the service (default `"default"`);
+  the triggering profile key is sent as `profile` so central keeps per-profile
+  stats and can serve per-profile policy later.
 - On any central failure/timeout the turn routes via a crude size-based
   fallback (`fallbackTier`) and a throttled warning is logged; routing never
-  blocks on the service. The fallback's one tunable knob is `defaultTier`
-  (the tier for the normal middle case) — all fallback config is `openclaw.json`.
+  blocks on the service. The fallback's one tunable knob is the profile's
+  `defaultTier` — all fallback config is `openclaw.json`.
 - `sticky` blocks KV-cache-busting downgrades on short continuation turns; it
   applies over central and fallback decisions.
-- Image turns are never overridden.
+- Image turns skip central (text complexity says nothing about vision) and go
+  to the profile's strongest configured tier — the model most likely to be
+  vision-capable.
 
 ## Deploying the central service
 

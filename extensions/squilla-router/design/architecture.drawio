@@ -20,19 +20,19 @@
         <mxCell id="fleetBox" value="OpenClaw 实例（可多实例 / fleet） — 瘦客户端 · 配置全来自 openclaw.json" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;verticalAlign=top;fontStyle=1;spacingTop=6;" vertex="1" parent="1">
           <mxGeometry x="40" y="220" width="360" height="330" as="geometry" />
         </mxCell>
-        <mxCell id="plugin" value="squilla-router 插件（before_model_resolve）— 无路由智能" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#6c8ebf;fontStyle=1;" vertex="1" parent="1">
+        <mxCell id="plugin" value="squilla-router 插件（before_model_resolve）— 虚拟 id 触发 · 无路由智能" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#6c8ebf;fontStyle=1;" vertex="1" parent="1">
           <mxGeometry x="60" y="252" width="320" height="28" as="geometry" />
         </mxCell>
-        <mxCell id="p_img" value="图片短路" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+        <mxCell id="p_img" value="触发门：命中虚拟 id 才路由" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
           <mxGeometry x="60" y="292" width="150" height="34" as="geometry" />
         </mxCell>
-        <mxCell id="p_map" value="tier → 模型映射" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+        <mxCell id="p_map" value="per-profile tier→模型映射" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
           <mxGeometry x="230" y="292" width="150" height="34" as="geometry" />
         </mxCell>
         <mxCell id="p_sticky" value="KV-cache 粘滞" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
           <mxGeometry x="60" y="336" width="150" height="34" as="geometry" />
         </mxCell>
-        <mxCell id="p_fb" value="粗略兜底（长度/代码）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+        <mxCell id="p_fb" value="粗略兜底 + 图片→最强档" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
           <mxGeometry x="230" y="336" width="150" height="34" as="geometry" />
         </mxCell>
         <mxCell id="p_tx" value="会话记录 transcript（明文所在地 · 端上）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=11;" vertex="1" parent="1">
@@ -41,7 +41,7 @@
         <mxCell id="p_log" value="debug 日志：source + decisionId（与明文并排）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
           <mxGeometry x="60" y="428" width="320" height="34" as="geometry" />
         </mxCell>
-        <mxCell id="p_cfg" value="配置来源：openclaw.json（tiers / defaultTier / sticky / central 端点）— 启动即定，不经 tokenhub" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e8e8e8;strokeColor=#999999;fontSize=10;fontStyle=2;" vertex="1" parent="1">
+        <mxCell id="p_cfg" value="配置来源：openclaw.json（profiles：虚拟 id → 档位表 / sticky / central 端点）— 启动即定，不经 tokenhub" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e8e8e8;strokeColor=#999999;fontSize=10;fontStyle=2;" vertex="1" parent="1">
           <mxGeometry x="60" y="474" width="320" height="52" as="geometry" />
         </mxCell>
 
@@ -69,7 +69,7 @@
         <mxCell id="privacy" value="隐私边界：库内无明文" style="rounded=1;whiteSpace=wrap;html=1;dashed=1;fillColor=none;strokeColor=#b85450;fontColor=#b85450;verticalAlign=top;fontStyle=2;spacingTop=4;" vertex="1" parent="1">
           <mxGeometry x="460" y="580" width="380" height="110" as="geometry" />
         </mxCell>
-        <mxCell id="mysql" value="MySQL — decisions / feedback&#10;仅派生数据（无消息文本列）" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
+        <mxCell id="mysql" value="MySQL — decisions（含 profile 列）/ feedback&#10;仅派生数据（无消息文本列）" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
           <mxGeometry x="560" y="608" width="180" height="70" as="geometry" />
         </mxCell>
 
@@ -79,7 +79,7 @@
         </mxCell>
 
         <!-- Edges -->
-        <mxCell id="e_route" value="POST /v1/route（明文 · 内部网）" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;fontSize=10;endArrow=block;" edge="1" parent="1" source="plugin" target="s_api">
+        <mxCell id="e_route" value="POST /v1/route（明文 + profile · 内部网）" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;fontSize=10;endArrow=block;" edge="1" parent="1" source="plugin" target="s_api">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
         <mxCell id="e_resp" value="tier + decisionId（返回）" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;fontSize=10;endArrow=block;dashed=1;" edge="1" parent="1" source="s_resp" target="p_map">

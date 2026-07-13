@@ -15,7 +15,7 @@
         <mxCell id="tokenhub" value="tokenhub（内部中控）· 按 tenant 存版本化策略配置" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontStyle=1;verticalAlign=top;spacingTop=6;" vertex="1" parent="1">
           <mxGeometry x="360" y="80" width="320" height="80" as="geometry" />
         </mxCell>
-        <mxCell id="th_b" value="策略包：confidenceThreshold / anchors / 默认档&#10;margin / 欠路由安全网 · policyVersion" style="text;html=1;fontSize=10;align=left;spacingLeft=8;spacingTop=2;" vertex="1" parent="1">
+        <mxCell id="th_b" value="策略包：confidenceThreshold / anchors / 默认档&#10;margin / 安全网 · policyVersion（未来可按 profile 键控）" style="text;html=1;fontSize=10;align=left;spacingLeft=8;spacingTop=2;" vertex="1" parent="1">
           <mxGeometry x="368" y="112" width="304" height="40" as="geometry" />
         </mxCell>
 

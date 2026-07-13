@@ -1,8 +1,12 @@
-// SquillaRouter plugin-local logic: tier→model resolution, KV-cache sticky, a
-// crude central-outage fallback, and config parsing. All real routing
-// intelligence (embedding, classification, gates) lives in the central service;
-// this file holds only what must run in-process (the model override) plus what
-// keeps routing usable when central is unreachable.
+// SquillaRouter plugin-local logic: routing-profile matching, tier→model
+// resolution, KV-cache sticky, a crude central-outage fallback, and config
+// parsing. All real routing intelligence lives in the central service; this
+// file holds only what must run in-process.
+//
+// Trigger contract: routing runs ONLY when the session's selected model is one
+// of the configured virtual routing ids (the `profiles` keys). Real models are
+// never intercepted. A virtual id resolves to nothing outside this plugin, so
+// once a profile matches the hook MUST return an override.
 
 export const TEXT_TIERS = ["c0", "c1", "c2", "c3"] as const;
 export type Tier = (typeof TEXT_TIERS)[number];
@@ -13,6 +17,14 @@ export type RouteSource = "central" | "fallback";
 export type TierTarget = {
   model: string;
   provider?: string;
+};
+
+// One routing profile, keyed in config by the virtual model id that triggers
+// it (e.g. "squilla/auto"). Each profile carries its own tier→model table so
+// different virtual ids can route across different model sets.
+export type RouteProfile = {
+  tiers: Partial<Record<Tier, TierTarget>>;
+  defaultTier: Tier;
 };
 
 // KV-cache-aware sticky routing. Switching models mid-session throws away the
@@ -42,8 +54,7 @@ export type CentralConfig = {
 // the fallback path). tokenhub distributes policy to the central service only,
 // never to the plugin.
 export type SquillaRouterConfig = {
-  tiers: Partial<Record<Tier, TierTarget>>;
-  defaultTier: Tier;
+  profiles: Record<string, RouteProfile>;
   sticky: StickyConfig;
   central?: CentralConfig;
 };
@@ -58,6 +69,29 @@ const CENTRAL_DEFAULT_TENANT = "default";
 const STICKY_DEFAULT_ENABLED = true;
 const STICKY_DEFAULT_MAX_USER_LEN = 200;
 
+export type ProfileMatch = { key: string; profile: RouteProfile };
+
+// The trigger check: does the session's requested model name a routing
+// profile? Config keys may be written as "provider/modelId" or as the bare
+// modelId (OpenClaw model ids themselves may contain "/"), so try the
+// qualified form first, then the bare id.
+export function matchProfile(
+  profiles: Record<string, RouteProfile>,
+  providerId: string | undefined,
+  modelId: string | undefined,
+): ProfileMatch | undefined {
+  if (!modelId) {
+    return undefined;
+  }
+  if (providerId) {
+    const qualified = `${providerId}/${modelId}`;
+    if (profiles[qualified]) {
+      return { key: qualified, profile: profiles[qualified] };
+    }
+  }
+  return profiles[modelId] ? { key: modelId, profile: profiles[modelId] } : undefined;
+}
+
 // Crude fallback thresholds. These are NOT the central rule layer — just a
 // size/shape guess so a central outage still routes roughly by difficulty
 // instead of pinning every turn to one model. Central owns the real policy;
@@ -67,7 +101,7 @@ const FALLBACK_CODE_CHARS = 2_500;
 const FALLBACK_SHORT_CHARS = 240;
 
 // Central-outage fallback: pick a tier from raw size/shape only. The "normal"
-// middle case defers to the operator's defaultTier (openclaw.json), so the one
+// middle case defers to the profile's defaultTier (openclaw.json), so the one
 // tunable knob for the fallback stays in config, not in code.
 export function fallbackTier(message: string, attachmentCount: number, defaultTier: Tier): Tier {
   if (message.length >= FALLBACK_HEAVY_CHARS) {
@@ -84,7 +118,7 @@ export function fallbackTier(message: string, attachmentCount: number, defaultTi
 
 // heuristic.py _nearest_valid_tier: prefer the same tier, then walk up so an
 // unconfigured tier never silently downgrades a turn, then walk down.
-function nearestConfiguredTier(tier: Tier, tiers: SquillaRouterConfig["tiers"]): Tier | undefined {
+function nearestConfiguredTier(tier: Tier, tiers: RouteProfile["tiers"]): Tier | undefined {
   const start = TEXT_TIERS.indexOf(tier);
   for (const candidate of TEXT_TIERS.slice(start)) {
     if (tiers[candidate]?.model) {
@@ -132,19 +166,21 @@ function applySticky(
 }
 
 // Turn an abstract tier (from central or the fallback) into a concrete model:
-// snap to the nearest configured tier, then apply sticky. Both inputs live in
-// tier space, so the result is always a configured tier.
+// snap to the profile's nearest configured tier, then apply sticky. A parsed
+// profile always has at least one usable tier, so this only returns undefined
+// on an impossible config.
 export function resolveRoute(
-  config: SquillaRouterConfig,
+  profile: RouteProfile,
+  sticky: StickyConfig,
   tier: Tier,
-  sticky?: StickyContext,
+  ctx?: StickyContext,
 ): ResolvedRoute | undefined {
-  const desiredTier = nearestConfiguredTier(tier, config.tiers);
+  const desiredTier = nearestConfiguredTier(tier, profile.tiers);
   if (!desiredTier) {
     return undefined;
   }
-  const { tier: resolvedTier, stuck } = applySticky(desiredTier, config.sticky, sticky);
-  const target = config.tiers[resolvedTier];
+  const { tier: resolvedTier, stuck } = applySticky(desiredTier, sticky, ctx);
+  const target = profile.tiers[resolvedTier];
   if (!target) {
     return undefined;
   }
@@ -163,14 +199,16 @@ function parseTierTarget(value: unknown): TierTarget | undefined {
   return provider ? { model: record.model.trim(), provider } : { model: record.model.trim() };
 }
 
-export function parseRouterConfig(
-  pluginConfig: Record<string, unknown> | undefined,
-): SquillaRouterConfig | undefined {
-  const rawTiers = pluginConfig?.tiers;
+function parseProfile(raw: unknown): RouteProfile | undefined {
+  if (typeof raw !== "object" || raw === null) {
+    return undefined;
+  }
+  const record = raw as Record<string, unknown>;
+  const rawTiers = record.tiers;
   if (typeof rawTiers !== "object" || rawTiers === null) {
     return undefined;
   }
-  const tiers: SquillaRouterConfig["tiers"] = {};
+  const tiers: RouteProfile["tiers"] = {};
   for (const tier of TEXT_TIERS) {
     const target = parseTierTarget((rawTiers as Record<string, unknown>)[tier]);
     if (target) {
@@ -180,15 +218,34 @@ export function parseRouterConfig(
   if (Object.keys(tiers).length === 0) {
     return undefined;
   }
-  const rawDefault = pluginConfig?.defaultTier;
+  const rawDefault = record.defaultTier;
   const defaultTier =
     typeof rawDefault === "string" && (TEXT_TIERS as readonly string[]).includes(rawDefault)
       ? (rawDefault as Tier)
       : "c1";
+  return { tiers, defaultTier };
+}
+
+export function parseRouterConfig(
+  pluginConfig: Record<string, unknown> | undefined,
+): SquillaRouterConfig | undefined {
+  const rawProfiles = pluginConfig?.profiles;
+  if (typeof rawProfiles !== "object" || rawProfiles === null) {
+    return undefined;
+  }
+  const profiles: Record<string, RouteProfile> = {};
+  for (const [key, raw] of Object.entries(rawProfiles)) {
+    const profile = parseProfile(raw);
+    if (key.trim() && profile) {
+      profiles[key.trim()] = profile;
+    }
+  }
+  if (Object.keys(profiles).length === 0) {
+    return undefined;
+  }
   const central = parseCentralConfig(pluginConfig?.central);
   return {
-    tiers,
-    defaultTier,
+    profiles,
     sticky: parseStickyConfig(pluginConfig?.sticky),
     ...(central ? { central } : {}),
   };

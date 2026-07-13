@@ -1,12 +1,15 @@
 // SquillaRouter plugin entrypoint: a thin client of the central routing
-// service. The central box owns all routing intelligence; this side keeps only
-// what must run in-process (applying the model override), is inherently local
-// (tier-to-model mapping, KV-cache sticky, image bypass), or keeps routing
-// usable when central is down (a crude size-based fallback).
+// service. Routing triggers ONLY when the session's selected model is one of
+// the configured virtual routing ids (profiles keys); real models are never
+// intercepted. The central box owns all routing intelligence; this side keeps
+// only what must run in-process (applying the model override), is inherently
+// local (tier-to-model mapping, KV-cache sticky, image handling), or keeps
+// routing usable when central is down (a crude size-based fallback).
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import { routeRemote } from "./central-client.js";
 import {
   fallbackTier,
+  matchProfile,
   parseRouterConfig,
   resolveRoute,
   type RouteSource,
@@ -23,13 +26,14 @@ const CENTRAL_WARN_INTERVAL_MS = 60_000;
 export default definePluginEntry({
   id: "squilla-router",
   name: "SquillaRouter",
-  description: "Routes each turn to a configured model tier via a central routing service.",
+  description:
+    "Routes turns on virtual routing model ids to a configured model tier via a central routing service.",
   register(api) {
     const config = parseRouterConfig(api.pluginConfig);
     if (!config) {
       api.logger.warn(
-        "squilla-router: no usable tiers configured " +
-          "(plugins.entries.squilla-router.config.tiers.{c0..c3}.model); routing disabled",
+        "squilla-router: no usable routing profiles configured " +
+          '(plugins.entries.squilla-router.config.profiles."<virtual-id>".tiers); routing disabled',
       );
       return;
     }
@@ -44,22 +48,31 @@ export default definePluginEntry({
     let lastCentralWarnAt = 0;
 
     api.on("before_model_resolve", async (event, ctx) => {
-      // Text-complexity routing says nothing about vision needs; leave image
-      // turns on the session's configured (image-capable) model.
-      if (event.attachments?.some((attachment) => attachment.kind === "image")) {
+      // Trigger gate: only turns whose requested model is a configured virtual
+      // routing id are routed. Sessions on real models pass through untouched.
+      const match = matchProfile(config.profiles, ctx.modelProviderId, ctx.modelId);
+      if (!match) {
         return;
       }
+      const { key: profileKey, profile } = match;
       const sessionKey = ctx.sessionKey;
       const attachmentCount = event.attachments?.length ?? 0;
 
-      // Central first, crude local fallback on any failure — routing never
-      // blocks on the service being slow or down.
+      // From here on we MUST return an override: the virtual id resolves to no
+      // real model, so passing through would fail model resolution.
+      //
+      // Image turns skip central (text-complexity says nothing about vision)
+      // and go to the profile's strongest configured tier — the model most
+      // likely to be vision-capable.
+      const hasImage = event.attachments?.some((attachment) => attachment.kind === "image");
+
       let tier: Tier | undefined;
       let decisionId: string | undefined;
       let source: RouteSource = "fallback";
-      if (config.central) {
+      if (!hasImage && config.central) {
         const result = await routeRemote(config.central, {
           sessionKey: sessionKey ?? "",
+          profile: profileKey,
           message: event.prompt,
           attachmentCount,
         });
@@ -78,7 +91,7 @@ export default definePluginEntry({
         }
       }
       if (tier === undefined) {
-        tier = fallbackTier(event.prompt, attachmentCount, config.defaultTier);
+        tier = hasImage ? "c3" : fallbackTier(event.prompt, attachmentCount, profile.defaultTier);
       }
 
       // Sticky only applies when we can identify the session and know its prior
@@ -86,7 +99,7 @@ export default definePluginEntry({
       const lastTier = sessionKey ? sessionTiers.get(sessionKey) : undefined;
       const stickyCtx: StickyContext | undefined =
         lastTier !== undefined ? { lastTier, promptLen: event.prompt.length } : undefined;
-      const route = resolveRoute(config, tier, stickyCtx);
+      const route = resolveRoute(profile, config.sticky, tier, stickyCtx);
       if (!route) {
         return;
       }
@@ -97,7 +110,8 @@ export default definePluginEntry({
       // transcript (which holds the plaintext), while the central store holds
       // the plaintext-free trail under the same id.
       api.logger.debug?.(
-        `squilla-router: source=${source} tier=${route.resolvedTier} model=${route.target.model}` +
+        `squilla-router: profile=${profileKey} source=${source} ` +
+          `tier=${route.resolvedTier} model=${route.target.model}` +
           (decisionId ? ` decision=${decisionId}` : "") +
           (route.stuck ? ` (sticky: held from ${route.desiredTier})` : ""),
       );
