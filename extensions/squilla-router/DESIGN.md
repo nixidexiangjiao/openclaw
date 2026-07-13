@@ -62,13 +62,13 @@ OpenSquilla 的 SquillaRouter 会给每一轮对话选一个「够用的最便�
 
 代码位置：
 
-| 侧 | 文件 | 职责 |
-|---|---|---|
-| 插件 | `extensions/squilla-router/index.ts` | 触发门（`matchProfile`）、`before_model_resolve` 接线、图片处理、兜底、粘滞、落地覆盖 |
-| 插件 | `extensions/squilla-router/central-client.ts` | 调 `/v1/route`（带 `profile`），只解析 `tier` + `decisionId`，失败即返回兜底信号 |
-| 插件 | `extensions/squilla-router/router.ts` | `matchProfile`（触发门）、`fallbackTier`（粗略兜底）、`resolveRoute`（就近档位 + 粘滞）、配置解析 |
-| 插件 | `extensions/squilla-router/session-store.ts` | 每会话上一轮档位（TTL 30min，LRU 上限 2000） |
-| 中央 | `services/squilla_central/server.py` | 嵌入 → `classify_semantic` → 置信门/flag 升级 → 落库（含 profile 列）→ 响应；MySQL 存储 |
+| 侧   | 文件                                          | 职责                                                                                              |
+| ---- | --------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| 插件 | `extensions/squilla-router/index.ts`          | 触发门（`matchProfile`）、`before_model_resolve` 接线、图片处理、兜底、粘滞、落地覆盖             |
+| 插件 | `extensions/squilla-router/central-client.ts` | 调 `/v1/route`（带 `profile`），只解析 `tier` + `decisionId`，失败即返回兜底信号                  |
+| 插件 | `extensions/squilla-router/router.ts`         | `matchProfile`（触发门）、`fallbackTier`（粗略兜底）、`resolveRoute`（就近档位 + 粘滞）、配置解析 |
+| 插件 | `extensions/squilla-router/session-store.ts`  | 每会话上一轮档位（TTL 30min，LRU 上限 2000）                                                      |
+| 中央 | `services/squilla_central/server.py`          | 嵌入 → `classify_semantic` → 置信门/flag 升级 → 落库（含 profile 列）→ 响应；MySQL 存储           |
 
 ---
 
@@ -88,30 +88,44 @@ OpenSquilla 的 SquillaRouter 会给每一轮对话选一个「够用的最便�
 - **多 profile 的用途**：不同虚拟 id 绑定不同的 4 档模型组合（省钱型/高质量型/合规型），
   同一网关同时提供；中央按 `profile` 字段区分统计与（未来）策略。
 
-配置示例：
+配置示例（`openclaw.json` 里插件配置位于 `plugins.entries.<pluginId>.config`，`pluginId`
+即 `openclaw.plugin.json` 的 `id`；`config` 下的字段由插件 `configSchema` 定义）：
 
 ```json
 {
-  "profiles": {
-    "squilla/auto": {
-      "defaultTier": "c1",
-      "tiers": {
-        "c0": { "model": "deepseek/deepseek-v4-flash" },
-        "c1": { "model": "deepseek/deepseek-v4-pro" },
-        "c2": { "model": "z-ai/glm-5.2" },
-        "c3": { "model": "z-ai/glm-5.2" }
-      }
-    },
-    "squilla/auto-max": {
-      "defaultTier": "c2",
-      "tiers": {
-        "c2": { "model": "z-ai/glm-5.2" },
-        "c3": { "model": "z-ai/glm-5.2", "provider": "zai" }
+  "plugins": {
+    "entries": {
+      "squilla-router": {
+        "config": {
+          "profiles": {
+            "squilla/auto": {
+              "defaultTier": "c1",
+              "tiers": {
+                "c0": { "model": "deepseek/deepseek-v4-flash" },
+                "c1": { "model": "deepseek/deepseek-v4-pro" },
+                "c2": { "model": "z-ai/glm-5.2" },
+                "c3": { "model": "z-ai/glm-5.2" }
+              }
+            },
+            "squilla/auto-max": {
+              "defaultTier": "c2",
+              "tiers": {
+                "c2": { "model": "z-ai/glm-5.2" },
+                "c3": { "model": "z-ai/glm-5.2", "provider": "zai" }
+              }
+            }
+          },
+          "sticky": { "enabled": true, "maxUserLen": 200 },
+          "central": {
+            "url": "http://router-box:8710/v1/route",
+            "tenantId": "team-a",
+            "apiKey": "sk-...",
+            "timeoutMs": 2000
+          }
+        }
       }
     }
-  },
-  "sticky": { "enabled": true, "maxUserLen": 200 },
-  "central": { "url": "http://router-box:8710/v1/route", "tenantId": "team-a" }
+  }
 }
 ```
 
@@ -186,13 +200,13 @@ embedding 失败时中央侧还有启发式兜底，照常落库，所以插件�
 
 ### 6.2 为什么这么收
 
-| 关注点 | 处理 |
-|---|---|
-| 中央策略要能灰度/回滚（置信阈值、锚点、margin/安全网、默认档） | tokenhub 下发版本化策略包给中央，可灰度、可回滚 |
-| 决策可复现 | 决策轨迹记 `policyVersion`，能回放某次路由用的是哪版策略 |
-| 插件配置（profiles、sticky、central 端点） | 走 `openclaw.json`，由运维按实例管理；**不经 tokenhub** |
-| 新增运行时依赖必须能容忍它挂 | 中央对 tokenhub **fail-open**：拉不到就用 last-known-good |
-| 不能进热路径 | 中央后台定时刷新 + **单槽快照**；`_route` 只读快照，绝不 per-turn 拉取 |
+| 关注点                                                         | 处理                                                                   |
+| -------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| 中央策略要能灰度/回滚（置信阈值、锚点、margin/安全网、默认档） | tokenhub 下发版本化策略包给中央，可灰度、可回滚                        |
+| 决策可复现                                                     | 决策轨迹记 `policyVersion`，能回放某次路由用的是哪版策略               |
+| 插件配置（profiles、sticky、central 端点）                     | 走 `openclaw.json`，由运维按实例管理；**不经 tokenhub**                |
+| 新增运行时依赖必须能容忍它挂                                   | 中央对 tokenhub **fail-open**：拉不到就用 last-known-good              |
+| 不能进热路径                                                   | 中央后台定时刷新 + **单槽快照**；`_route` 只读快照，绝不 per-turn 拉取 |
 
 > 明确的取舍：因为 tokenhub 不下发到插件，**改 fleet 的 profile/模型映射要逐个改
 > `openclaw.json`**。这是刻意的——插件侧保持零外部配置依赖、启动即定，换来更简单、更可预测
@@ -242,14 +256,14 @@ embedding 失败时中央侧还有启发式兜底，照常落库，所以插件�
 
 ## 8. 失败模式与降级
 
-| 失败点 | 行为 | 用户可见影响 |
-|---|---|---|
-| 中央超时/宕机 | 插件用粗略兜底（按长度/代码猜档），节流告警 | 路由变粗，不阻塞 |
-| Embeddings 挂 | 中央用自己的启发式兜底，照常落库 | 客户端无感 |
-| MySQL 挂 | 决策落库失败（路由本身仍返回）；需告警 | 轨迹缺失，路由可用 |
-| tokenhub 挂 | 中央保留 last-known-good 策略快照 | 无（策略不更新而已） |
-| 会话档位丢失 | 下一轮自由重路由 | 无（可能一次 cache miss） |
-| 配置了虚拟 id 但插件禁用/无 profile | 虚拟 id 走正常模型解析并报错 | 运维配置错误，启动日志有告警 |
+| 失败点                              | 行为                                        | 用户可见影响                 |
+| ----------------------------------- | ------------------------------------------- | ---------------------------- |
+| 中央超时/宕机                       | 插件用粗略兜底（按长度/代码猜档），节流告警 | 路由变粗，不阻塞             |
+| Embeddings 挂                       | 中央用自己的启发式兜底，照常落库            | 客户端无感                   |
+| MySQL 挂                            | 决策落库失败（路由本身仍返回）；需告警      | 轨迹缺失，路由可用           |
+| tokenhub 挂                         | 中央保留 last-known-good 策略快照           | 无（策略不更新而已）         |
+| 会话档位丢失                        | 下一轮自由重路由                            | 无（可能一次 cache miss）    |
+| 配置了虚拟 id 但插件禁用/无 profile | 虚拟 id 走正常模型解析并报错                | 运维配置错误，启动日志有告警 |
 
 原则：路由链路上的每个外部依赖都必须能**优雅降级**，绝不让配置/中控/库的故障阻断出词。
 唯一的例外是最后一行：虚拟 id 本身依赖插件存活，这是触发机制的固有耦合，靠启动告警兜底。
@@ -268,9 +282,10 @@ embedding 失败时中央侧还有启发式兜底，照常落库，所以插件�
 ## 10. 未来 / 替换 V4
 
 `classify_semantic` 是单一替换接缝：把它换成 OpenSquilla 训练好的 V4 管线（BGE + LightGBM
-+ MLP ensemble），只要仍返回 `final_tier`，store / 轨迹 / 端点 / 通用协议全不动。通用协议
-保证客户端不会因为换算法而改代码。自学习靠 `/v1/feedback` 收点赞点踩 + 决策库里的嵌入
-向量；`profile` 列让按 profile 的效果对比与差异化策略成为可能。
+
+- MLP ensemble），只要仍返回 `final_tier`，store / 轨迹 / 端点 / 通用协议全不动。通用协议
+  保证客户端不会因为换算法而改代码。自学习靠 `/v1/feedback` 收点赞点踩 + 决策库里的嵌入
+  向量；`profile` 列让按 profile 的效果对比与差异化策略成为可能。
 
 ---
 
