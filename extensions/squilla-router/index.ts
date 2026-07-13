@@ -1,15 +1,17 @@
 // SquillaRouter plugin entrypoint: a thin client of the central routing
 // service. The central box owns all routing intelligence; this side keeps only
-// what must survive a central outage or is inherently local — image bypass,
-// tier-to-model mapping, KV-cache sticky, and the heuristic fallback.
+// what must run in-process (applying the model override), is inherently local
+// (tier-to-model mapping, KV-cache sticky, image bypass), or keeps routing
+// usable when central is down (a crude size-based fallback).
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import { routeRemote } from "./central-client.js";
 import {
-  classifyTurn,
+  fallbackTier,
   parseRouterConfig,
   resolveRoute,
-  type RouteDecision,
+  type RouteSource,
   type StickyContext,
+  type Tier,
 } from "./router.js";
 import { SessionTierStore } from "./session-store.js";
 
@@ -50,10 +52,11 @@ export default definePluginEntry({
       const sessionKey = ctx.sessionKey;
       const attachmentCount = event.attachments?.length ?? 0;
 
-      // Central first, local heuristic on any failure — routing never blocks
-      // on the service being slow or down.
-      let decision: RouteDecision | undefined;
+      // Central first, crude local fallback on any failure — routing never
+      // blocks on the service being slow or down.
+      let tier: Tier | undefined;
       let decisionId: string | undefined;
+      let source: RouteSource = "fallback";
       if (config.central) {
         const result = await routeRemote(config.central, {
           sessionKey: sessionKey ?? "",
@@ -61,20 +64,21 @@ export default definePluginEntry({
           attachmentCount,
         });
         if (result.ok) {
-          decision = result.route.decision;
+          tier = result.route.tier;
           decisionId = result.route.decisionId;
+          source = "central";
         } else {
           const now = Date.now();
           if (now - lastCentralWarnAt >= CENTRAL_WARN_INTERVAL_MS) {
             lastCentralWarnAt = now;
             api.logger.warn(
-              `squilla-router: central route failed (${result.reason}); using local heuristic`,
+              `squilla-router: central route failed (${result.reason}); using local fallback`,
             );
           }
         }
       }
-      if (!decision) {
-        decision = classifyTurn(event.prompt, attachmentCount);
+      if (tier === undefined) {
+        tier = fallbackTier(event.prompt, attachmentCount, config.defaultTier);
       }
 
       // Sticky only applies when we can identify the session and know its prior
@@ -82,7 +86,7 @@ export default definePluginEntry({
       const lastTier = sessionKey ? sessionTiers.get(sessionKey) : undefined;
       const stickyCtx: StickyContext | undefined =
         lastTier !== undefined ? { lastTier, promptLen: event.prompt.length } : undefined;
-      const route = resolveRoute(config, decision, stickyCtx);
+      const route = resolveRoute(config, tier, stickyCtx);
       if (!route) {
         return;
       }
@@ -93,10 +97,8 @@ export default definePluginEntry({
       // transcript (which holds the plaintext), while the central store holds
       // the plaintext-free trail under the same id.
       api.logger.debug?.(
-        `squilla-router: band=${route.band} class=${route.routeClass} ` +
-          `tier=${route.resolvedTier} model=${route.target.model}` +
-          (decisionId ? ` decision=${decisionId}` : " (local heuristic)") +
-          (route.flagUpgraded ? " (flag upgrade)" : "") +
+        `squilla-router: source=${source} tier=${route.resolvedTier} model=${route.target.model}` +
+          (decisionId ? ` decision=${decisionId}` : "") +
           (route.stuck ? ` (sticky: held from ${route.desiredTier})` : ""),
       );
       return {

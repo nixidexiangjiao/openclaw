@@ -15,15 +15,19 @@ openclaw plugin (thin client)          central service (all routing logic)
   image bypass                           embed message (external embeddings box)
   tier -> model mapping        POST      anchor-similarity classification
   KV-cache sticky            ------->    margin upgrade / under-routing safety
-  heuristic fallback         <-------    confidence gate / flag upgrades
+  crude size-based fallback  <-------    confidence gate / flag upgrades
   logs decisionId              tier      decision trail store (NO plaintext)
                             decisionId   feedback intake for self-learning
 ```
 
 Division of labor: the central box owns every routing decision so policy
-changes land in one place; the plugin keeps only what must survive a central
-outage (heuristic fallback), is inherently local (tier-to-model mapping,
-KV-cache sticky, image bypass), or must not leave the machine (attachments).
+changes land in one place; the plugin holds no routing intelligence. It keeps
+only the in-process override, what is inherently local (tier-to-model mapping,
+KV-cache sticky, image bypass), and a crude size-based fallback for when
+central is unreachable — deliberately NOT a copy of the central rule layer
+(that would duplicate policy and drift). All plugin config comes from
+`openclaw.json`; the central control plane (tokenhub) feeds the central
+service only, never the plugin.
 
 ## Privacy and traceability contract
 
@@ -81,10 +85,12 @@ KV-cache sticky, image bypass), or must not leave the machine (attachments).
 - Tiers without a `model` are skipped; unconfigured tiers resolve to the
   nearest configured tier, preferring equal-or-higher (no silent downgrades).
 - `central.tenantId` keys per-user data on the service (default `"default"`).
-- On any central failure/timeout the turn routes via the local heuristic and a
-  throttled warning is logged; routing never blocks on the service.
-- `sticky` blocks KV-cache-busting downgrades on short continuation turns
-  (see HEURISTICS.md §5.3); it applies over central and fallback decisions.
+- On any central failure/timeout the turn routes via a crude size-based
+  fallback (`fallbackTier`) and a throttled warning is logged; routing never
+  blocks on the service. The fallback's one tunable knob is `defaultTier`
+  (the tier for the normal middle case) — all fallback config is `openclaw.json`.
+- `sticky` blocks KV-cache-busting downgrades on short continuation turns; it
+  applies over central and fallback decisions.
 - Image turns are never overridden.
 
 ## Deploying the central service
@@ -118,15 +124,17 @@ docker run -p 8080:80 ghcr.io/huggingface/text-embeddings-inference:cpu-latest \
   --model-id BAAI/bge-small-zh-v1.5
 ```
 
-If embeddings fail, the central service still answers using the heuristic
-band rules (recorded with the heuristic band in the trail), so clients only
-fall back to their local heuristic when the central service itself is down.
+If embeddings fail, the central service still answers using its own heuristic
+band rules (recorded in the trail), so the plugin only uses its crude fallback
+when the central service itself is down.
 
-## Classification internals
+## Design
 
-See `HEURISTICS.md` for the full walkthrough. Sources ported from OpenSquilla
-(thresholds and keyword lists kept equivalent): bands from
-`engine/routing/heuristic.py`, flags from the v4 bundle `flags.py` +
-`router.runtime.yaml`, flag upgrades from `predictor.py`
-`_apply_flag_overrides`, margin upgrade / under-routing safety from the v4
-postprocess, sticky from `_apply_sticky_tier`.
+See [`DESIGN.md`](DESIGN.md) for the full design (architecture, request flow,
+control-plane boundary) and the drawio diagrams under `design/`. All routing
+intelligence — embedding, anchor-similarity classification, margin/under-route
+safety, confidence gate, flag upgrades — lives in the central service
+(`services/squilla_central/server.py`, ported from OpenSquilla). The plugin
+holds none of it; its only offline logic is `fallbackTier`, a crude size-based
+guess used solely when central is unreachable, and `applySticky`
+(KV-cache-aware, mirrors OpenSquilla `_apply_sticky_tier`).

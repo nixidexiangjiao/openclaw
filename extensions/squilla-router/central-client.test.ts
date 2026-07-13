@@ -8,14 +8,14 @@ const config: CentralConfig = {
   timeoutMs: 500,
 };
 
-// Generic wire response: tier + decisionId + confidence, plus an opaque `meta`
-// object the client never decodes. Algorithm-specific detail lives in meta.
+// Generic wire response: tier + decisionId are the only fields the client
+// reads; confidence/policyVersion/meta are ignored (opaque to the client).
 const okBody = {
   decisionId: "d-1",
   tier: "c2",
   confidence: 0.83,
   policyVersion: "central-v1",
-  meta: { routeClass: "R2", band: "anchor", flags: { debug: true }, flagUpgraded: false },
+  meta: { routeClass: "R2", band: "anchor" },
 };
 
 function fetchStub(
@@ -26,7 +26,7 @@ function fetchStub(
 }
 
 describe("routeRemote", () => {
-  it("posts tenant/session/message and parses the decision", async () => {
+  it("posts tenant/session/message and parses tier + decisionId", async () => {
     let seen: { url: string; init: RequestInit } | undefined;
     const result = await routeRemote(
       config,
@@ -38,17 +38,7 @@ describe("routeRemote", () => {
     );
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.route.decisionId).toBe("d-1");
-      // routeClass/band are derived locally from the abstract tier; the opaque
-      // meta is not decoded, so central decisions carry no heuristic flags.
-      expect(result.route.decision).toMatchObject({
-        band: "central",
-        tier: "c2",
-        routeClass: "R2",
-        confidence: 0.83,
-        flagUpgraded: false,
-      });
-      expect(result.route.decision.flags.debug).toBe(false);
+      expect(result.route).toEqual({ tier: "c2", decisionId: "d-1" });
     }
     expect(seen?.url).toBe(config.url);
     expect(JSON.parse(String(seen?.init.body))).toEqual({
@@ -67,8 +57,7 @@ describe("routeRemote", () => {
     );
     expect(result.ok).toBe(true);
     if (result.ok) {
-      // No confidence in the response falls back to full trust in the tier.
-      expect(result.route.decision).toMatchObject({ tier: "c1", routeClass: "R1", confidence: 1 });
+      expect(result.route).toEqual({ tier: "c1", decisionId: "d-2" });
     }
   });
 
