@@ -61,7 +61,7 @@
                 <mxCell id="call_route" value="routeRemote → POST /v1/route&#xa;{tenantId, sessionKey, profile,&#xa;message, attachmentCount}" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#6c8ebf;fontSize=11;" parent="1" vertex="1">
                     <mxGeometry x="660" y="300" width="260" height="54" as="geometry"/>
                 </mxCell>
-                <mxCell id="c_embed" value="390维特征装配（BGE-ONNX 进程内）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" parent="1" vertex="1">
+                <mxCell id="c_embed" value="390维特征装配（BGE-ONNX 进程内 · CPU）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" parent="1" vertex="1">
                     <mxGeometry x="660" y="375" width="260" height="36" as="geometry"/>
                 </mxCell>
                 <mxCell id="c_classify" value="V4 集成：LGBM+MLP → 概率融合 → 后处理" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" parent="1" vertex="1">

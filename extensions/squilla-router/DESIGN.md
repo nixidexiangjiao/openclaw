@@ -169,7 +169,20 @@ BGE 走 **bundle 内的 ONNX 模型**进程内推理（不再需要外部 embedd
 历史特征。若将来要补历史特征，需要中央持有短时的 per-session 明文环（内存、不落库、TTL），
 是可选增强，非本次范围。
 
-### 4.3 降级与部署要求
+### 4.3 BGE 固定进程内 ONNX（否决外部 emb）
+
+- **BGE 就在 bundle 内、进程内跑 ONNX，纯 CPU**（`bge_onnx.py` 硬编码
+  `CPUExecutionProvider`，取 CLS + L2 归一，512 维）。bge-small INT8 对单条短消息编码
+  在 CPU 上是毫秒级、低 QPS 够用，**不需要也未启用 GPU**。
+- **不接外部 embedding 端点**（曾评估、明确否决）：训练好的 PCA（512→64）和 LGBM/MLP 头是
+  **焊死在这个 INT8 BGE 输出空间上**的（`feature_schema_version` 对这几个产物取哈希防漂移）。
+  所以 BGE 不是可替换的「通用 embedding 服务」，而是模型的第一层。换外部端点只有两种结果：
+  要么端点必须是**同一个模型**（收益仅是把已经很快的 CPU 编码挪到另一台机器，却凭空多一跳
+  网络和一个故障面，还要严守逐位一致契约），要么是**不同模型**——那会让向量落在分布外、
+  PCA+头静默失效、选档乱掉。两者都不值当，故完整移植就用进程内 ONNX，简单且正确。
+  （真要换更好的 embedding，只能重训整条 V4 管线，属 OpenSquilla 离线训练任务。）
+
+### 4.4 降级与部署要求
 
 - **降级**：V4 bundle/依赖不可用时，中央退到无依赖的 band 启发式（`classify_heuristic`，
   与插件端兜底同源），路由照常应答。`SQUILLA_V4=0` 可强制启发式。

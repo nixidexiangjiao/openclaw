@@ -64,7 +64,7 @@
                 <mxCell id="mysql" value="MySQL — decisions（含 profile 列）/ feedback&#xa;仅派生数据（无消息文本列）" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" parent="1" vertex="1">
                     <mxGeometry x="580" y="611" width="180" height="70" as="geometry"/>
                 </mxCell>
-                <mxCell id="embed" value="V4 模型 bundle（Git LFS）&#xa;BGE-ONNX + LGBM + MLP + PCA/TFIDF" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=11;" parent="1" vertex="1">
+                <mxCell id="embed" value="V4 模型 bundle（Git LFS）&#xa;BGE-ONNX(CPU) + LGBM + MLP + PCA/TFIDF" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=11;" parent="1" vertex="1">
                     <mxGeometry x="970" y="254" width="180" height="60" as="geometry"/>
                 </mxCell>
                 <mxCell id="e_route" value="POST /v1/route（明文 + profile · 内部网）" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;fontSize=10;endArrow=block;" parent="1" source="plugin" target="s_api" edge="1">
