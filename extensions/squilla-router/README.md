@@ -119,38 +119,37 @@ the central service only, never the plugin.
 
 ## Deploying the central service
 
-The service is Python (stdlib plus PyMySQL — `pip install PyMySQL`) and lives
-in the opensquilla repo at `services/squilla_central/server.py`. Python was
-chosen deliberately: OpenSquilla's trained V4 pipeline and self-learning stack
-are Python, so upgrading the central classifier later is a drop-in change at
-the service's `classify_semantic` seam. Point it at a MySQL database (the
-`decisions`/`feedback` tables are created on startup), copy the directory to
-the router box, and:
+The service is Python and lives in the opensquilla repo at
+`services/squilla_central/server.py`. It classifies with OpenSquilla's **real
+V4 Phase 3 model** — the trained BGE-ONNX + LightGBM + MLP ensemble, run
+in-process via `V4Phase3Strategy` (BGE runs inside the model bundle as ONNX, so
+there is no external embeddings endpoint). Point it at a MySQL database (the
+`decisions`/`feedback` tables are created on startup), then:
 
 ```bash
-SQUILLA_EMBEDDINGS_URL=http://ml-box:8080/v1/embeddings \
-SQUILLA_EMBEDDINGS_MODEL=bge-small-zh-v1.5 \
 SQUILLA_CENTRAL_TOKEN=<token> \
 SQUILLA_MYSQL_HOST=db-box SQUILLA_MYSQL_USER=squilla \
 SQUILLA_MYSQL_PASSWORD=<password> SQUILLA_MYSQL_DATABASE=squilla_central \
-python3 services/squilla_central/server.py --host 0.0.0.0 --port 8710
+PYTHONPATH=src python3 services/squilla_central/server.py --host 0.0.0.0 --port 8710
 ```
 
-Optional env: `SQUILLA_MYSQL_PORT` (default `3306`),
-`SQUILLA_EMBEDDINGS_API_KEY`, `SQUILLA_EMBEDDINGS_TIMEOUT_S`,
-`SQUILLA_DEFAULT_TIER` (c0-c3), `SQUILLA_CONFIDENCE_THRESHOLD` (0-1),
-`SQUILLA_POLICY_VERSION` (stamped on every decision for reproducibility).
+The V4 path needs, on the box:
 
-The embeddings endpoint is any OpenAI-compatible server, e.g.:
+- `opensquilla[recommended]` (numpy / lightgbm / onnxruntime / scikit-learn /
+  joblib), and
+- the Git-LFS model bundle under
+  `opensquilla/squilla_router/models/v4.2_phase3_inference` — run `git lfs pull`
+  (weights are ~40 MB LightGBM + ~24 MB BGE-ONNX).
 
-```bash
-docker run -p 8080:80 ghcr.io/huggingface/text-embeddings-inference:cpu-latest \
-  --model-id BAAI/bge-small-zh-v1.5
-```
+Optional env: `SQUILLA_MYSQL_PORT` (default `3306`), `SQUILLA_DEFAULT_TIER`
+(c0-c3), `SQUILLA_CONFIDENCE_THRESHOLD` (0-1), `SQUILLA_POLICY_VERSION` (stamped
+on every decision for reproducibility), `SQUILLA_V4_BUNDLE_DIR` (override the
+bundle path), `SQUILLA_V4=0` (force the heuristic — see below).
 
-If embeddings fail, the central service still answers using its own heuristic
-band rules (recorded in the trail), so the plugin only uses its crude fallback
-when the central service itself is down.
+If the V4 model or its deps/bundle are unavailable, the service degrades to its
+own dependency-free band heuristic (recorded in the trail), so routing still
+answers on a fresh box before `git lfs pull`. The plugin only falls back to its
+own crude local guess when the central service itself is unreachable.
 
 ## Design
 

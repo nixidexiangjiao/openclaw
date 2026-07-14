@@ -46,10 +46,10 @@
                 <mxCell id="s_api" value="HTTP API：/v1/route · /v1/feedback · /v1/decisions · /v1/stats · /healthz" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#82b366;fontSize=11;" parent="1" vertex="1">
                     <mxGeometry x="490" y="220" width="360" height="34" as="geometry"/>
                 </mxCell>
-                <mxCell id="s_classify" value="classify_semantic（V4 替换接缝）&#xa;锚点余弦 + margin 升级 + 欠路由安全网" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#82b366;fontSize=11;" parent="1" vertex="1">
+                <mxCell id="s_classify" value="V4Classifier（真实 V4 Phase3）&#xa;390维特征 + LGBM+MLP 集成 + 后处理" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#82b366;fontSize=11;" parent="1" vertex="1">
                     <mxGeometry x="490" y="265" width="360" height="44" as="geometry"/>
                 </mxCell>
-                <mxCell id="s_gate" value="置信度门 + flag 升级 → final_tier" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#82b366;fontSize=11;" parent="1" vertex="1">
+                <mxCell id="s_gate" value="不可用时降级：无依赖 band 启发式" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#82b366;fontSize=11;" parent="1" vertex="1">
                     <mxGeometry x="490" y="319" width="360" height="34" as="geometry"/>
                 </mxCell>
                 <mxCell id="s_cfg" value="configSource：策略配置快照（单槽 · 后台刷新 · fail-open）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" parent="1" vertex="1">
@@ -64,7 +64,7 @@
                 <mxCell id="mysql" value="MySQL — decisions（含 profile 列）/ feedback&#xa;仅派生数据（无消息文本列）" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" parent="1" vertex="1">
                     <mxGeometry x="580" y="611" width="180" height="70" as="geometry"/>
                 </mxCell>
-                <mxCell id="embed" value="Embeddings 服务&#xa;（OpenAI 兼容 · TEI + bge）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=11;" parent="1" vertex="1">
+                <mxCell id="embed" value="V4 模型 bundle（Git LFS）&#xa;BGE-ONNX + LGBM + MLP + PCA/TFIDF" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=11;" parent="1" vertex="1">
                     <mxGeometry x="970" y="254" width="180" height="60" as="geometry"/>
                 </mxCell>
                 <mxCell id="e_route" value="POST /v1/route（明文 + profile · 内部网）" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;fontSize=10;endArrow=block;" parent="1" source="plugin" target="s_api" edge="1">
@@ -80,7 +80,7 @@
                         </Array>
                     </mxGeometry>
                 </mxCell>
-                <mxCell id="e_embed" value="embed 消息" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;fontSize=10;endArrow=block;" parent="1" source="s_classify" target="embed" edge="1">
+                <mxCell id="e_embed" value="进程内加载 + 推理" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;fontSize=10;endArrow=block;" parent="1" source="s_classify" target="embed" edge="1">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
                 <mxCell id="e_store" value="insert decision（无明文）" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;fontSize=10;endArrow=block;" parent="1" source="s_resp" target="mysql" edge="1">

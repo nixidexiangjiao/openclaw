@@ -61,16 +61,16 @@
                 <mxCell id="call_route" value="routeRemote → POST /v1/route&#xa;{tenantId, sessionKey, profile,&#xa;message, attachmentCount}" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#6c8ebf;fontSize=11;" parent="1" vertex="1">
                     <mxGeometry x="660" y="300" width="260" height="54" as="geometry"/>
                 </mxCell>
-                <mxCell id="c_embed" value="嵌入消息（外部 embeddings）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" parent="1" vertex="1">
+                <mxCell id="c_embed" value="390维特征装配（BGE-ONNX 进程内）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" parent="1" vertex="1">
                     <mxGeometry x="660" y="375" width="260" height="36" as="geometry"/>
                 </mxCell>
-                <mxCell id="c_classify" value="classify_semantic：锚点余弦&#xa;+ margin 升级 + 欠路由安全网" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" parent="1" vertex="1">
+                <mxCell id="c_classify" value="V4 集成：LGBM+MLP → 概率融合 → 后处理" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" parent="1" vertex="1">
                     <mxGeometry x="660" y="425" width="260" height="44" as="geometry"/>
                 </mxCell>
-                <mxCell id="note_embed" value="embedding 失败 →&#xa;中央侧启发式兜底（照常落库）" style="rounded=1;whiteSpace=wrap;html=1;dashed=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=10;" parent="1" vertex="1">
+                <mxCell id="note_embed" value="V4 不可用 →&#xa;中央侧启发式兜底（照常落库）" style="rounded=1;whiteSpace=wrap;html=1;dashed=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=10;" parent="1" vertex="1">
                     <mxGeometry x="940" y="425" width="200" height="44" as="geometry"/>
                 </mxCell>
-                <mxCell id="c_gate" value="置信度门（低置信→defaultTier）&#xa;→ flag 升级 → final_tier" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" parent="1" vertex="1">
+                <mxCell id="c_gate" value="route_class(R0-R3) → tier(c0-c3)&#xa;+ margin / difficulty / flags" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" parent="1" vertex="1">
                     <mxGeometry x="660" y="485" width="260" height="44" as="geometry"/>
                 </mxCell>
                 <mxCell id="c_store" value="落库（MySQL · 无明文 · 含 profile 列）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" parent="1" vertex="1">
