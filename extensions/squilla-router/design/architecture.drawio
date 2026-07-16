@@ -10,13 +10,13 @@
                 <mxCell id="tokenhub" value="tokenhub（内部中控 · 配置下发）&#xa;只向中央下发版本化策略配置" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontStyle=1;verticalAlign=top;spacingTop=6;" parent="1" vertex="1">
                     <mxGeometry x="490" y="60" width="360" height="70" as="geometry"/>
                 </mxCell>
-                <mxCell id="th_b" value="策略包：confidenceThreshold / anchors / 默认档（+policyVersion）" style="text;html=1;fontSize=10;align=left;spacingLeft=8;" parent="1" vertex="1">
+                <mxCell id="th_b" value="策略包：分类阈值 / 默认档 / 粘滞参数（+policyVersion）" style="text;html=1;fontSize=10;align=left;spacingLeft=8;" parent="1" vertex="1">
                     <mxGeometry x="518" y="102" width="344" height="24" as="geometry"/>
                 </mxCell>
                 <mxCell id="fleetBox" value="OpenClaw 实例（可多实例 / fleet） — 瘦客户端 · 配置全来自 openclaw.json" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;verticalAlign=top;fontStyle=1;spacingTop=6;" parent="1" vertex="1">
                     <mxGeometry x="40" y="170" width="380" height="380" as="geometry"/>
                 </mxCell>
-                <mxCell id="plugin" value="squilla-router 插件（before_model_resolve）— 虚拟 id 触发 · 无路由智能" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#6c8ebf;fontStyle=1;" parent="1" vertex="1">
+                <mxCell id="plugin" value="squilla-router 插件（before_model_resolve）— 虚拟 id 触发 · 零策略（无粘滞/无兜底）" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#6c8ebf;fontStyle=1;" parent="1" vertex="1">
                     <mxGeometry x="60" y="220" width="340" height="30" as="geometry"/>
                 </mxCell>
                 <mxCell id="p_img" value="触发门：命中虚拟 id 才路由" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#6c8ebf;fontSize=11;" parent="1" vertex="1">
@@ -25,10 +25,10 @@
                 <mxCell id="p_map" value="per-profile tier→模型映射" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#6c8ebf;fontSize=11;" parent="1" vertex="1">
                     <mxGeometry x="235" y="265" width="165" height="34" as="geometry"/>
                 </mxCell>
-                <mxCell id="p_sticky" value="KV-cache 粘滞" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#6c8ebf;fontSize=11;" parent="1" vertex="1">
+                <mxCell id="p_sticky" value="上一档记忆（SessionTierStore）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#6c8ebf;fontSize=11;" parent="1" vertex="1">
                     <mxGeometry x="60" y="309" width="165" height="34" as="geometry"/>
                 </mxCell>
-                <mxCell id="p_fb" value="粗略兜底 + 图片→最强档" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#6c8ebf;fontSize=11;" parent="1" vertex="1">
+                <mxCell id="p_fb" value="失败回退：上一档 / 首轮默认档" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#6c8ebf;fontSize=11;" parent="1" vertex="1">
                     <mxGeometry x="235" y="309" width="165" height="34" as="geometry"/>
                 </mxCell>
                 <mxCell id="p_tx" value="会话记录 transcript（明文所在地 · 端上）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=11;" parent="1" vertex="1">
@@ -37,7 +37,7 @@
                 <mxCell id="p_log" value="debug 日志：source + decisionId（与明文并排）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#6c8ebf;fontSize=11;" parent="1" vertex="1">
                     <mxGeometry x="60" y="402" width="340" height="34" as="geometry"/>
                 </mxCell>
-                <mxCell id="p_cfg" value="配置来源：openclaw.json&#xa;（profiles：虚拟 id → 档位表 / sticky / central 端点）&#xa;— 启动即定，不经 tokenhub" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e8e8e8;strokeColor=#999999;fontSize=10;fontStyle=2;" parent="1" vertex="1">
+                <mxCell id="p_cfg" value="配置来源：openclaw.json&#xa;（profiles：虚拟 id → 档位表 / central 端点）&#xa;— 启动即定，不经 tokenhub" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e8e8e8;strokeColor=#999999;fontSize=10;fontStyle=2;" parent="1" vertex="1">
                     <mxGeometry x="60" y="453" width="340" height="60" as="geometry"/>
                 </mxCell>
                 <mxCell id="centralBox" value="中央路由服务（Python · services/squilla_central） — 拥有一切决策" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;verticalAlign=top;fontStyle=1;spacingTop=6;" parent="1" vertex="1">
@@ -52,11 +52,14 @@
                 <mxCell id="s_gate" value="不可用时降级：无依赖 band 启发式" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#82b366;fontSize=11;" parent="1" vertex="1">
                     <mxGeometry x="490" y="319" width="360" height="34" as="geometry"/>
                 </mxCell>
+                <mxCell id="s_sticky" value="图片规则（hasImage→最强档）+ KV-cache 粘滞&#xa;（会话档位缓存 · 短续轮防降档 · 升档放行）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#82b366;fontSize=11;" parent="1" vertex="1">
+                    <mxGeometry x="490" y="363" width="360" height="44" as="geometry"/>
+                </mxCell>
                 <mxCell id="s_cfg" value="configSource：策略配置快照（单槽 · 后台刷新 · fail-open）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" parent="1" vertex="1">
-                    <mxGeometry x="490" y="363" width="360" height="34" as="geometry"/>
+                    <mxGeometry x="490" y="417" width="360" height="34" as="geometry"/>
                 </mxCell>
                 <mxCell id="s_resp" value="响应（通用协议）：{ tier, decisionId, confidence, policyVersion, meta }" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;" parent="1" vertex="1">
-                    <mxGeometry x="490" y="407" width="360" height="34" as="geometry"/>
+                    <mxGeometry x="490" y="461" width="360" height="34" as="geometry"/>
                 </mxCell>
                 <mxCell id="privacy" value="隐私边界：库内无明文" style="rounded=1;whiteSpace=wrap;html=1;dashed=1;fillColor=none;strokeColor=#b85450;fontColor=#b85450;verticalAlign=top;fontStyle=2;spacingTop=4;" parent="1" vertex="1">
                     <mxGeometry x="470" y="575" width="400" height="125" as="geometry"/>
@@ -67,7 +70,7 @@
                 <mxCell id="embed" value="V4 模型 bundle（Git LFS）&#xa;BGE-ONNX(CPU) + LGBM + MLP + PCA/TFIDF" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=11;" parent="1" vertex="1">
                     <mxGeometry x="970" y="254" width="180" height="60" as="geometry"/>
                 </mxCell>
-                <mxCell id="e_route" value="POST /v1/route（明文 + profile · 内部网）" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;fontSize=10;endArrow=block;" parent="1" source="plugin" target="s_api" edge="1">
+                <mxCell id="e_route" value="POST /v1/route（明文 + profile + hasImage · 内部网）" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;fontSize=10;endArrow=block;" parent="1" source="plugin" target="s_api" edge="1">
                     <mxGeometry x="-0.0217" y="25" relative="1" as="geometry">
                         <mxPoint x="-20" y="-25" as="offset"/>
                     </mxGeometry>
@@ -75,7 +78,7 @@
                 <mxCell id="e_resp" value="tier + decisionId（返回）" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;fontSize=10;endArrow=block;dashed=1;" parent="1" source="s_resp" target="p_map" edge="1">
                     <mxGeometry relative="1" as="geometry">
                         <Array as="points">
-                            <mxPoint x="430" y="424"/>
+                            <mxPoint x="430" y="478"/>
                             <mxPoint x="430" y="282"/>
                         </Array>
                     </mxGeometry>
@@ -90,7 +93,7 @@
                     <mxGeometry relative="1" as="geometry">
                         <Array as="points">
                             <mxPoint x="930" y="95"/>
-                            <mxPoint x="930" y="380"/>
+                            <mxPoint x="930" y="434"/>
                         </Array>
                     </mxGeometry>
                 </mxCell>
