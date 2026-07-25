@@ -7,7 +7,7 @@
                 <mxCell id="title" value="单轮路由流程（before_model_resolve）— 虚拟 id 触发 · 插件纯透传" style="text;html=1;fontSize=18;fontStyle=1;align=left;" parent="1" vertex="1">
                     <mxGeometry x="40" y="20" width="760" height="30" as="geometry"/>
                 </mxCell>
-                <mxCell id="subtitle" value="插件不做任何路由判断：分类 / 缺档就近 / 图片 / KV-cache 粘滞全在中央；中央调不通才用 defaultTier" style="text;html=1;fontSize=12;align=left;fontColor=#666666;" parent="1" vertex="1">
+                <mxCell id="subtitle" value="插件不做任何路由判断：分类 / 人为 bias / 缺档就近 / 图片 / KV-cache 粘滞全在中央；中央调不通才用 defaultTier" style="text;html=1;fontSize=12;align=left;fontColor=#666666;" parent="1" vertex="1">
                     <mxGeometry x="40" y="50" width="900" height="20" as="geometry"/>
                 </mxCell>
                 <mxCell id="laneP_bg" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f9ff;strokeColor=#bcd4f0;dashed=1;" vertex="1" parent="1">
@@ -17,7 +17,7 @@
                     <mxGeometry x="60" y="92" width="300" height="20" as="geometry"/>
                 </mxCell>
                 <mxCell id="laneC_bg" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f4faf4;strokeColor=#c3dba8;dashed=1;" vertex="1" parent="1">
-                    <mxGeometry x="620" y="215" width="520" height="575" as="geometry"/>
+                    <mxGeometry x="620" y="215" width="520" height="650" as="geometry"/>
                 </mxCell>
                 <mxCell id="laneC" value="中央侧（server.py · Central._route）— 拥有全部判定" style="text;html=1;fontSize=13;fontStyle=1;align=left;fontColor=#82b366;" parent="1" vertex="1">
                     <mxGeometry x="630" y="222" width="420" height="20" as="geometry"/>
@@ -67,20 +67,23 @@
                 <mxCell id="note_degrade" value="V4 不可用 →&#xa;无依赖 band 启发式（照常 snap/粘滞/落库）" style="rounded=1;whiteSpace=wrap;html=1;dashed=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=10;" parent="1" vertex="1">
                     <mxGeometry x="950" y="480" width="185" height="48" as="geometry"/>
                 </mxCell>
-                <mxCell id="c_snap" value="③ snap_to_available：落到客户端能服务的档&#xa;缺档向上，不静默降级" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" parent="1" vertex="1">
+                <mxCell id="c_bias" value="③ 人为 bias：命中规则 → 按加权 argmax 的位移调档&#xa;（保留 postprocess 修正；真改了档 → tainted）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=11;" parent="1" vertex="1">
                     <mxGeometry x="650" y="545" width="280" height="46" as="geometry"/>
                 </mxCell>
-                <mxCell id="c_sticky" value="④ apply_sticky：短续轮不得低于上一轮档位&#xa;（保 KV-cache）；升档放行" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" parent="1" vertex="1">
+                <mxCell id="c_snap" value="④ snap_to_available：落到客户端能服务的档&#xa;缺档向上，不静默降级" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" parent="1" vertex="1">
                     <mxGeometry x="650" y="608" width="280" height="46" as="geometry"/>
                 </mxCell>
-                <mxCell id="db_last" value="store.last_tier(tenant, session)&#xa;decisions 最新 final_tier（idx_decisions_session）&#xa;— 多实例 / 重启均正确" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;" parent="1" vertex="1">
-                    <mxGeometry x="950" y="600" width="185" height="64" as="geometry"/>
-                </mxCell>
-                <mxCell id="c_store" value="⑤ 落库（MySQL · 无明文）&#xa;final_tier = 实际服务档 · classifier_tier · stuck" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" parent="1" vertex="1">
+                <mxCell id="c_sticky" value="⑤ apply_sticky：短续轮不得低于上一轮档位&#xa;（保 KV-cache）；升档放行" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" parent="1" vertex="1">
                     <mxGeometry x="650" y="671" width="280" height="46" as="geometry"/>
                 </mxCell>
-                <mxCell id="c_resp" value="⑥ 返回 { tier, decisionId, confidence, meta }&#xa;（通用协议；tier 即实际服务档）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;" parent="1" vertex="1">
-                    <mxGeometry x="650" y="734" width="280" height="46" as="geometry"/>
+                <mxCell id="db_last" value="store.last_tier(tenant, session)&#xa;decisions 最新 final_tier（idx_decisions_session）&#xa;— 多实例 / 重启均正确" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;" parent="1" vertex="1">
+                    <mxGeometry x="950" y="663" width="185" height="64" as="geometry"/>
+                </mxCell>
+                <mxCell id="c_store" value="⑥ 落库（MySQL · 无明文）&#xa;final_tier=实际服务档 · classifier_tier · stuck&#xa;+ 自学习捕获：features / turn_index / complaint / tainted" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" parent="1" vertex="1">
+                    <mxGeometry x="650" y="734" width="280" height="58" as="geometry"/>
+                </mxCell>
+                <mxCell id="c_resp" value="⑦ 返回 { tier, decisionId, confidence, meta }&#xa;（通用协议；tier 即实际服务档）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;" parent="1" vertex="1">
+                    <mxGeometry x="650" y="809" width="280" height="46" as="geometry"/>
                 </mxCell>
                 <mxCell id="f1" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;" parent="1" source="start" target="d_gate" edge="1">
                     <mxGeometry relative="1" as="geometry"/>
@@ -119,7 +122,7 @@
                 <mxCell id="c_img_snap" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;dashed=1;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="img_tier" target="c_snap" edge="1">
                     <mxGeometry relative="1" as="geometry">
                         <Array as="points">
-                            <mxPoint x="1042" y="568"/>
+                            <mxPoint x="1042" y="631"/>
                         </Array>
                     </mxGeometry>
                 </mxCell>
@@ -129,7 +132,10 @@
                 <mxCell id="c2n" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=none;dashed=1;strokeColor=#d6b656;" parent="1" source="c_classify" target="note_degrade" edge="1">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="c3e" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;" parent="1" source="c_classify" target="c_snap" edge="1">
+                <mxCell id="c3e" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;" parent="1" source="c_classify" target="c_bias" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="c_bias_e" value="图片轮不参与" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;fontSize=10;" parent="1" source="c_bias" target="c_snap" edge="1">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
                 <mxCell id="c4e" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;" parent="1" source="c_snap" target="c_sticky" edge="1">
@@ -147,7 +153,7 @@
                 <mxCell id="f_resp" value="响应 / 超时" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;dashed=1;fontSize=10;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="c_resp" target="d_ok" edge="1">
                     <mxGeometry relative="1" as="geometry">
                         <Array as="points">
-                            <mxPoint x="580" y="757"/>
+                            <mxPoint x="580" y="832"/>
                             <mxPoint x="580" y="465"/>
                         </Array>
                     </mxGeometry>

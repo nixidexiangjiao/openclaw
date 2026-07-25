@@ -155,7 +155,42 @@ Optional env: `SQUILLA_MYSQL_PORT` (default `3306`), `SQUILLA_DEFAULT_TIER`
 on every decision for reproducibility), `SQUILLA_STICKY` (`0` disables
 KV-cache sticky), `SQUILLA_STICKY_MAX_USER_LEN` (default `200` — the longest
 turn still treated as a continuation), `SQUILLA_V4_BUNDLE_DIR` (override the
-bundle path), `SQUILLA_V4=0` (force the heuristic — see below).
+bundle path), `SQUILLA_V4=0` (force the heuristic — see below),
+`SQUILLA_CAPTURE_FEATURES` (default on), `SQUILLA_CAPTURE_RAW_BGE` (default
+off), `SQUILLA_TIER_BIAS` (see below).
+
+### Self-learning corpus
+
+Every classified turn stores what offline training actually consumes: the
+390-dim feature vector the heads used, its `feature_schema_version`, the raw
+route class, a per-session `turn_index`, and a `complaint` boolean derived from
+the message (never the message itself). `GET /v1/train/export?tenantId=...`
+emits them in OpenSquilla `RouterTrainSample` shape.
+
+The `complaint` flag is the one that matters most: without it every row aligns
+as `normal` and a retrain just re-learns the model's own output. Watch
+`GET /v1/stats` → `training` (`decisions` / `withFeatures` / `tainted` /
+`complaints` / `trainable`) to see whether the corpus is worth training on.
+
+### Manual tier bias
+
+`SQUILLA_TIER_BIAS` holds JSON rules that reweight the model's tier
+probabilities — e.g. make c3 more likely during business hours:
+
+```json
+[{ "name": "peak-c3", "weights": { "c3": 3.0 }, "hours": [1, 10] }]
+```
+
+`hours` is a UTC `[start, end)` window (may wrap midnight); `profiles` scopes a
+rule to specific virtual ids; first match wins. The weight is applied as a
+**shift**: the rule moves the tier by how far it moves the argmax, so the
+model's own postprocess (margin upgrade, under-routing safety net) is preserved
+rather than overwritten.
+
+Any turn a rule actually moves is flagged `tainted` and **excluded from the
+training export** — a manual decision must never come back as a learned label.
+Taint follows the sticky chain, so a turn held on a biased tier is excluded
+too. A rule that matches but does not change the tier leaves the row trainable.
 
 If the V4 model or its deps/bundle are unavailable, the service degrades to its
 own dependency-free band heuristic (recorded in the trail), so routing still

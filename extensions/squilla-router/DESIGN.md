@@ -224,8 +224,10 @@ snap 放在中央而不是插件，是因为插件必须零判定：这样落库
 - **部署**：V4 路径需要 `opensquilla[recommended]`（numpy / lightgbm / onnxruntime /
   scikit-learn / joblib）+ Git-LFS 模型 bundle（`git lfs pull`，权重约 lgbm 40MB、
   BGE-ONNX 24MB）。`PYTHONPATH=src` 让服务能 import opensquilla 包。
-- **自学习**：`/v1/feedback` 收点赞点踩；V4 可 opt-in 输出它实际消费的 390 维特征做离线
-  重训（`feature_schema_version` 保证只和同一特征基的样本混训）。
+- **自学习**：`/v1/feedback` 收点赞点踩；捕获与导出见 §4A。`SQUILLA_CAPTURE_FEATURES=0`
+  可关掉特征捕获（省存储，代价是不再产生训练语料）。
+- **升级已有库**：新列由启动时的 `SHOW COLUMNS` + `ALTER TABLE ADD COLUMN` 补齐
+  （`CREATE TABLE IF NOT EXISTS` 对已存在的表是空操作）。每个新列都带 DEFAULT，老行照常可读。
 
 ### 4.8 纯透传对自学习的意义
 
@@ -235,6 +237,107 @@ snap 放在中央而不是插件，是因为插件必须零判定：这样落库
 - `decisions.final_tier` == 实际服务的档位 → 可直接作训练标签；
 - `decisions.classifier_tier` == 模型自己的选择 → 做诊断与「后处理改了多少」的度量；
 - `stuck` 标出被粘滞按住的轮次 → 这些轮的档位不是模型判断的结果，训练取样时可据此筛除。
+
+---
+
+## 4A. 自学习：中央要存哪些数据
+
+判断标准不是「存得多」，而是「离线管线（`self_learning/`）真的读哪些字段」。对照
+`schema.py:RouterTrainSample`、`alignment.py`、`dataset.py` 逐项过一遍：
+
+### 4A.1 缺什么（本次补齐）
+
+| 字段 | 谁消费 | 不存的后果 |
+|---|---|---|
+| `features_390_b64` | `dataset.py` 的 X 矩阵 | **致命**：没有特征就没有训练集，其余字段再全也没用 |
+| `feature_schema_version` | `dataset.py` 只保留占多数的版本 | bundle 一升级，新旧特征基**静默混训**，模型学到错位的空间 |
+| `raw_bge_1536_b64` | MLP 头重训 | 只能重训 LGBM 头，MLP 头冻结（行大小 ×4，故 opt-in） |
+| `route_class`（模型原始预测） | `alignment.py` 的回溯/踩票闸门（与 `final_route_class` 分开读） | 回溯纠正判不出「原本路由得低不低」，纠正信号丢失 |
+| `turn_index` | `align_session` 排序 + `i+1`/`i+2` 邻接 | 回溯纠正（看下一轮是否抱怨）整个失效 |
+| `complaint_detected` | `REASON_IMMEDIATE_COMPLAINT` / `REASON_RETROSPECTIVE` | **最关键**：见 4A.2 |
+
+`complaint_detected` 由中央用 `detect_complaint()` 在请求时从消息算出，**只落布尔值**，
+契合「库不存明文」。它复用 OpenSquilla 的 `COMPLAINT_TERMS` 表（懒加载；拉不到会打印告警，
+因为静默丢失它等于静默废掉自学习）。
+
+### 4A.2 为什么 complaint 是分水岭
+
+`dataset.py` 的证据账本按 `reason` 给权重：纠正类（回溯 1.0 / 即时抱怨 0.9 / 显式踩票 1.2）
+高，确认类（normal 0.3）低且按相同特征向量的出现频次开方衰减。
+
+没有 complaint 信号，**每一行都是 `REASON_NORMAL`**——训练集变成「模型自己的输出」，
+重训只是让模型更确信它原来的判断。这不是自学习，是自我强化，且会放大既有偏差。所以
+「数据够不够」的真正问题不是行数，而是**纠正信号占比**；`/v1/stats` 因此新增
+`training` 块（`decisions` / `withFeatures` / `tainted` / `complaints` / `trainable`）。
+
+### 4A.3 不需要补的
+
+- `anti_downgrade_applied`、`large_context_floor_applied`：`capture.py` 写了，但
+  `alignment.py` / `dataset.py` **从不读**。
+- `confidence_gate_applied`：中央这条路径不存在置信度闸门——`v4_phase3.py:78` 存了
+  `confidence_threshold` 却再没用过，V4 在 postprocess 内部自己做门控且不暴露标志位。
+  所以导出时钉为 `False`，而不是造一个假列。
+- `exploration`：`schema.py:78` 定义、`capture.py:99` 写入，但没有任何读取方；
+  我们的「人为干预」走 `tainted` **排除**，与 exploration 的「保留并做反事实」相反。
+- `image_route`：由 `band == "image"` 派生，已有。
+- `executed_kind`（feedback）：中央只有单模型轮，导出时恒为 `single`，不需要列。
+
+### 4A.4 取数：`GET /v1/train/export`
+
+按 `RouterTrainSample` 的字段名直出，离线端可直接 `from_json_dict`。过滤条件写在 SQL 里
+（`tainted = 0 AND features_b64 IS NOT NULL`），**不是**写在 endpoint 里——排除是数据的
+属性，任何将来的读取方都自动继承，不会有人忘记加。
+
+---
+
+## 4B. 人为干预档位概率（`SQUILLA_TIER_BIAS`）
+
+### 4B.1 怎么配
+
+```json
+[
+  { "name": "peak-c3", "weights": { "c3": 3.0 }, "hours": [1, 10] },
+  { "name": "night-cheap", "weights": { "c0": 2.0 }, "hours": [14, 22],
+    "profiles": ["squilla/auto"] }
+]
+```
+
+`hours` 是 **UTC** 的 `[start, end)`，可跨零点；`profiles` 省略则命中所有 profile；
+**第一条命中的规则生效**，所以配置顺序就是优先级。坏条目跳过并告警，不会让路由启动失败。
+
+### 4B.2 怎么作用：加权后的 argmax 位移，而不是重新选档
+
+```
+a0 = argmax(probabilities)              # 模型原始 argmax
+a1 = argmax(probabilities × weights)    # 加权后的 argmax
+served = clamp(index(classifier_tier) + (a1 - a0))
+```
+
+**关键是用「位移」而不是直接 `argmax(加权概率)`**。V4 的 postprocess 会在 argmax 之上再做
+margin 升档、欠路由安全网等修正，`classifier_tier` 往往**高于**它自己的 argmax。若直接按
+加权概率重新选档，会把这些修正统统抹掉——连没打算干预的轮次都被静默降级。位移法则保留
+postprocess，只叠加运维意图。
+
+图片轮不参与 bias（它压根没经过分类器，没有概率分布可加权）。
+
+### 4B.3 干预过的数据怎么丢弃
+
+判定「干预过」的边界是本需求的实质，分三层：
+
+1. **规则命中但没改变结果 → 仍然可训练。** 若加权没能改变 argmax（`shift == 0`），实际服务的
+   档位就是模型本来会选的，标签没有被污染。只按「有规则生效」丢弃会白扔掉大量干净样本。
+2. **规则真的改变了档位 → `tainted = 1`，丢弃。** 这一轮服务的是运维的决定，不是模型的判断。
+3. **粘滞把污染传播到下一轮 → 同样丢弃。** 若上一轮被 bias 抬到 c3，本轮是短续轮被
+   `apply_sticky` 按在 c3，那这个 c3 依然是干预的后果。所以 taint 沿粘滞链传播：
+   `tainted = 已改变 or (stuck and 上一轮 tainted)`。漏了这一步，干预会在一轮之后
+   「洗白」成学习到的标签。
+
+> 为什么是丢弃而不是反事实校正：反事实（IPS/DR）要求随机化与已知倾向性。这里的干预是
+> **确定性**的——同一时间窗内所有匹配轮都被同样处理，没有重叠支撑，倾向性恒为 0 或 1，
+> IPS 权重无定义。所以唯一正确的处理就是丢弃。
+
+`decisions` 记 `bias_rule`（哪条规则）+ `tainted`（是否排除），响应 `meta` 也带这两项，
+运维不用翻库就知道某一轮为什么是那个档位。
 
 ---
 
@@ -248,8 +351,8 @@ snap 放在中央而不是插件，是因为插件必须零判定：这样落库
   `availableTiers`/`hasImage` 报上去、档位→模型查表、进程内覆盖。明文只在端上 transcript。
 - **中央路由服务（Python）**：拥有一切决策。`V4Classifier`（真实 V4 集成模型，含 bundle 内
   BGE-ONNX）→ snap → KV-cache 粘滞 → 落库 → 返回抽象档位；分类器不可用时退启发式。
-- **MySQL**：`decisions`（含 `profile` / `classifier_tier` / `stuck` 列）/ `feedback`，
-  **无明文列**，位于隐私边界内；同时是粘滞的「上一轮档位」来源。
+- **MySQL**：`decisions` / `feedback`，**无明文列**，位于隐私边界内。一份数据三种用途：
+  决策轨迹（排查）、粘滞状态源（上一轮档位）、自学习语料（特征 + 对齐信号，见 §4A）。
 - **V4 模型 bundle**：`models/v4.2_phase3_inference/`（LGBM/MLP-ONNX/BGE-ONNX/PCA/TFIDF/SVD，
   Git LFS），随中央服务部署在同一台机器，进程内加载。
 - **tokenhub（中控）**：**只向中央服务**下发版本化策略配置；**不下发到插件**。详见 §7。
@@ -276,12 +379,18 @@ snap 放在中央而不是插件，是因为插件必须零判定：这样落库
 1. 读 `hasImage` / `availableTiers`（缺省视为全 4 档）。
 2. **图片轮** → `bypass_outcome(最强可用档, "image")`；否则 `classifier.classify(message)`；
    分类器为 None → `classify_heuristic`。
-3. **snap**：`snap_to_available(final_tier, available)`（缺档向上，不静默降级）。
-4. **粘滞**：`last_tier = store.last_tier(tenant, session)` → `apply_sticky(desired,
-   last_tier, len(message), sticky)`。
-5. **落库（无明文）**：`final_tier` 记真正服务的档，另存 `classifier_tier` + `stuck`。
-6. **返回** `{decisionId, tier, confidence, policyVersion, meta}`，meta 含 routeClass /
-   band / flags / margin / difficulty / `classifierTier` / `stuck`。
+3. **人为 bias**（§4B）：命中规则则按加权 argmax 的位移调整 `classifier_tier`；图片轮跳过。
+4. **snap**：`snap_to_available(biased_tier, available)`（缺档向上，不静默降级）。
+5. **粘滞**：`previous = store.last_decision(tenant, session)` → `apply_sticky(desired,
+   previous.tier, len(message), sticky)`。同一次查询顺带取回 `tainted` 与 `turnIndex`，
+   热路径仍只有一次往返。
+6. **落库（无明文）**：`final_tier` 记真正服务的档，另存 `classifier_tier` + `stuck`，
+   加上自学习捕获（`features_b64` / `turn_index` / `complaint` / `bias_rule` / `tainted`）。
+7. **返回** `{decisionId, tier, confidence, policyVersion, meta}`，meta 含 routeClass /
+   band / flags / margin / difficulty / `classifierTier` / `stuck` / `biasRule` / `tainted`。
+
+本节两处新增（bias、捕获）**都在中央内部**，`/v1/route` 的请求与响应形状没变，所以插件
+一行没改——这正是通用协议想要的效果。
 
 ---
 
@@ -307,7 +416,11 @@ snap 放在中央而不是插件，是因为插件必须零判定：这样落库
 - **明文只存在两处**：请求体（内部网传输，用后即弃）、客户端会话记录（端上）。
 - **决策库无明文**：`decisions` 表没有文本列，只存 profile、字符数、flags、4 类概率、
   margin、`base→gated→final` 档位轨迹、`classifier_tier`/`stuck`、route_class/difficulty、
-  版本号、延迟。
+  版本号、延迟，以及自学习捕获（`turn_index`、`complaint` 布尔、`features_b64`、
+  `feature_schema_version`、`bias_rule`、`tainted`）。
+- **特征向量不是明文**：`features_b64` 是 390 维 float16，经 PCA/TF-IDF-SVD 等**已拟合且
+  不可逆**的投影得到，无法还原出原文。`complaint` 只是一个由文本算出的布尔值。两者都属于
+  「派生数据」，与不落明文的契约一致。
 - **decisionId 关联**：每次决策返回 `decisionId`，插件打进 debug 日志（与端上明文并排）。
   查问题四步：`/v1/stats` 看分布（档位/band/**profile**/评分）→
   `/v1/decisions?sessionKey` 找 turn → `/v1/decisions/{id}` 看完整轨迹（含
@@ -326,6 +439,8 @@ snap 放在中央而不是插件，是因为插件必须零判定：这样落库
 | tokenhub 挂 | 中央保留 last-known-good 策略快照 | 无 |
 | 会话首轮 / 无历史 | `last_tier` 为空 → 不粘滞，自由路由 | 无 |
 | 完全没配 `central` | 每轮都走 `defaultTier`（等价于把虚拟 id 钉死成一个模型），启动日志告警 | 智能路由静默失效，属运维配置错误 |
+| `SQUILLA_TIER_BIAS` 写坏 | 坏条目跳过并告警，其余规则照常生效 | 该规则不生效，路由不中断 |
+| complaint 词表拉不到 | 打印告警，`complaint` 恒为 false | 路由不受影响；但语料退化为纯确认，重训无意义（`/v1/stats` 的 `complaints` 会是 0） |
 | 配置了虚拟 id 但插件禁用/无 profile | 虚拟 id 走正常模型解析并报错 | 运维配置错误，启动日志有告警 |
 
 原则：路由链路上每个外部依赖都必须能**优雅降级**，绝不让配置/中控/库/模型的故障阻断出词。
@@ -352,6 +467,14 @@ snap 放在中央而不是插件，是因为插件必须零判定：这样落库
 3. V4 模型 bundle 走 Git LFS + 部署发布；本沙箱无法拉权重/装 ML 依赖，故真实 V4 推理为
    **部署验证**，代码用注入 fake 分类器 + 启发式兜底路径覆盖，并已验证「LFS 指针 → 降级」。
 4. fleet 的 profile→模型映射靠 `openclaw.json`；大规模改动依赖外部配置管理/发布流程。
-5. 粘滞每轮多一次 `last_tier` 查询（走 `idx_decisions_session` 的单行索引查询）。目前
-   规模下可忽略；若 QPS 上来，可在中央加**进程内单槽 session→tier 缓存**（有明确所有者与
-   TTL），而不是把状态退回插件。
+5. 粘滞每轮多一次 `last_decision` 查询（走 `idx_decisions_session` 的单行索引查询）。目前
+   规模下可忽略；若 QPS 上来，可在中央加**进程内单槽 session→(tier, tainted) 缓存**（有明确
+   所有者与 TTL），而不是把状态退回插件。
+6. `features_b64` 约 0.78 KB/行（开 `raw_bge` 再加 ~3 KB），需要定保留期与归档策略；
+   `decisions` 目前无 TTL 清理。
+7. 离线闭环尚未接：`/v1/train/export` 出的是 `RouterTrainSample` 形状的 JSON，还需要一个
+   把它落成 event store 并驱动 `build_training_dataset → train → gates → promote` 的
+   调度侧。字段契约已静态核对（键名全对齐、必填项齐全），但沙箱缺 numpy，端到端跑通属
+   **部署验证**。
+8. 显式反馈的 `executed_kind` 在中央恒为 `single`；若将来中央支持 ensemble 轮，
+   `feedback` 表要加这一列，否则 `alignment.py` 会把 ensemble 的踩票误当作档位信号。
