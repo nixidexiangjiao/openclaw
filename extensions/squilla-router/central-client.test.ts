@@ -35,6 +35,8 @@ describe("routeRemote", () => {
         profile: "squilla/auto",
         message: "explain this traceback",
         attachmentCount: 0,
+        hasImage: false,
+        availableTiers: ["c0", "c1", "c2", "c3"],
       },
       fetchStub((url, init) => {
         seen = { url, init };
@@ -52,13 +54,22 @@ describe("routeRemote", () => {
       profile: "squilla/auto",
       message: "explain this traceback",
       attachmentCount: 0,
+      hasImage: false,
+      availableTiers: ["c0", "c1", "c2", "c3"],
     });
   });
 
   it("accepts a minimal response with only tier and decisionId", async () => {
     const result = await routeRemote(
       config,
-      { sessionKey: "s1", profile: "squilla/auto", message: "hi", attachmentCount: 0 },
+      {
+        sessionKey: "s1",
+        profile: "squilla/auto",
+        message: "hi",
+        attachmentCount: 0,
+        hasImage: false,
+        availableTiers: ["c1"],
+      },
       fetchStub(() => Response.json({ tier: "c1", decisionId: "d-2" })),
     );
     expect(result.ok).toBe(true);
@@ -71,7 +82,14 @@ describe("routeRemote", () => {
     let auth: string | undefined;
     await routeRemote(
       { ...config, apiKey: "k" },
-      { sessionKey: "s1", profile: "squilla/auto", message: "hi", attachmentCount: 0 },
+      {
+        sessionKey: "s1",
+        profile: "squilla/auto",
+        message: "hi",
+        attachmentCount: 0,
+        hasImage: false,
+        availableTiers: ["c1"],
+      },
       fetchStub((_url, init) => {
         auth = (init.headers as Record<string, string>).authorization;
         return Response.json(okBody);
@@ -96,7 +114,14 @@ describe("routeRemote", () => {
   ])("fails closed on %s", async (_name, respond, reason) => {
     const result = await routeRemote(
       config,
-      { sessionKey: "s1", profile: "squilla/auto", message: "hi", attachmentCount: 0 },
+      {
+        sessionKey: "s1",
+        profile: "squilla/auto",
+        message: "hi",
+        attachmentCount: 0,
+        hasImage: false,
+        availableTiers: ["c1"],
+      },
       fetchStub(respond),
     );
     expect(result).toEqual({ ok: false, reason });
@@ -107,7 +132,14 @@ describe("routeRemote", () => {
     timeoutError.name = "TimeoutError";
     const result = await routeRemote(
       config,
-      { sessionKey: "s1", profile: "squilla/auto", message: "hi", attachmentCount: 0 },
+      {
+        sessionKey: "s1",
+        profile: "squilla/auto",
+        message: "hi",
+        attachmentCount: 0,
+        hasImage: false,
+        availableTiers: ["c1"],
+      },
       (() => Promise.reject(timeoutError)) as unknown as typeof fetch,
     );
     expect(result).toEqual({ ok: false, reason: "timeout after 500ms" });

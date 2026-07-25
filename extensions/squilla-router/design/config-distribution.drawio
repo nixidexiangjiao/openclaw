@@ -16,7 +16,7 @@
                 <mxCell id="tokenhub" value="tokenhub（内部中控）· 按 tenant 存版本化策略配置" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontStyle=1;verticalAlign=top;spacingTop=6;" parent="1" vertex="1">
                     <mxGeometry x="240" y="166" width="500" height="66" as="geometry"/>
                 </mxCell>
-                <mxCell id="th_b" value="策略包：分类阈值 / 默认档 / margin·安全网 / 粘滞参数（enabled·max_user_len）· policyVersion（未来可按 profile 键控）" style="text;html=1;fontSize=10;align=left;spacingLeft=8;spacingTop=2;" parent="1" vertex="1">
+                <mxCell id="th_b" value="策略包：后处理阈值 / margin / 安全网 / 粘滞参数(sticky·maxUserLen) / 默认档 · policyVersion（未来可按 profile 键控）" style="text;html=1;fontSize=10;align=left;spacingLeft=8;spacingTop=2;" parent="1" vertex="1">
                     <mxGeometry x="248" y="198" width="484" height="28" as="geometry"/>
                 </mxCell>
                 <mxCell id="c_pull" value="后台定时拉取(≈30s)&#xa;GET /config/policy?tenant=…" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" parent="1" vertex="1">
@@ -40,8 +40,11 @@
                 <mxCell id="trail" value="decisionId 决策轨迹（MySQL · 无明文）记 policyVersion&#xa;→ 任意一次路由都能回放它当时用的是哪版策略（可复现 / 可回滚）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=11;" parent="1" vertex="1">
                     <mxGeometry x="255" y="616" width="470" height="56" as="geometry"/>
                 </mxCell>
-                <mxCell id="pluginNote" value="OpenClaw 插件（fleet）&#xa;配置 = openclaw.json&#xa;（tiers / defaultTier / sticky / central 端点）&#xa;&#xa;· 启动读一次 · 不经 tokenhub&#xa;· 无中控快照&#xa;· 改 fleet 模型映射 = 用配置管理/&#xa;  发布流程推 openclaw.json" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;verticalAlign=top;spacingTop=8;align=left;spacingLeft=10;" parent="1" vertex="1">
-                    <mxGeometry x="910" y="166" width="240" height="170" as="geometry"/>
+                <mxCell id="pluginNote" value="OpenClaw 插件（fleet）· 纯透传&#xa;配置 = openclaw.json&#xa;（tiers / defaultTier / central 端点）&#xa;&#xa;· 启动读一次 · 不经 tokenhub&#xa;· 无中控快照 · 无 sticky 配置&#xa;· 无策略可下发：插件已无判定逻辑&#xa;· 改 fleet 模型映射 = 用配置管理/&#xa;  发布流程推 openclaw.json" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;verticalAlign=top;spacingTop=8;align=left;spacingLeft=10;" parent="1" vertex="1">
+                    <mxGeometry x="910" y="166" width="240" height="185" as="geometry"/>
+                </mxCell>
+                <mxCell id="splitNote" value="所有者划分：&#xa;热改（策略/阈值/粘滞）→ tokenhub → 中央&#xa;冷改（虚拟 id ↔ 真实模型）→ openclaw.json → 插件" style="rounded=1;whiteSpace=wrap;html=1;dashed=1;fillColor=#f5f5f5;strokeColor=#999999;fontSize=10;align=left;spacingLeft=10;verticalAlign=top;spacingTop=6;" parent="1" vertex="1">
+                    <mxGeometry x="910" y="371" width="240" height="80" as="geometry"/>
                 </mxCell>
                 <mxCell id="g1" value="发布" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;fontSize=10;" parent="1" source="operator" target="tokenhub" edge="1">
                     <mxGeometry relative="1" as="geometry"/>

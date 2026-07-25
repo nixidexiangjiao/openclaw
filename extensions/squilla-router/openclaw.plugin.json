@@ -4,7 +4,7 @@
     "onStartup": true
   },
   "name": "SquillaRouter",
-  "description": "Routes turns on virtual routing model ids to a configured model tier via a central routing service.",
+  "description": "Routes turns on virtual routing model ids to a model tier chosen by a central routing service.",
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
@@ -45,14 +45,6 @@
         "description": "Keyed by the virtual routing model id that triggers routing (e.g. \"squilla/auto\"). Each profile maps abstract tiers to real models.",
         "type": "object",
         "additionalProperties": { "$ref": "#/$defs/profile" }
-      },
-      "sticky": {
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {
-          "enabled": { "type": "boolean" },
-          "maxUserLen": { "type": "integer", "minimum": 0 }
-        }
       },
       "central": {
         "type": "object",
