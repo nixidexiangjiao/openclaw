@@ -126,95 +126,31 @@ overridden locally.
   `hasImage` and central decides (today: skip the text classifier, serve the
   strongest available tier).
 
-## Deploying the central service
+## The central service
 
-The service is Python and lives in the opensquilla repo at
-`services/squilla_central/server.py`. It classifies with OpenSquilla's **real
-V4 Phase 3 model** — the trained BGE-ONNX + LightGBM + MLP ensemble, run
-in-process via `V4Phase3Strategy` (BGE runs inside the model bundle as ONNX, so
-there is no external embeddings endpoint). Point it at a MySQL database (the
-`decisions`/`feedback` tables are created on startup), then:
+The service is Python and lives in the **opensquilla** repo at
+`services/squilla_central/`. It owns every routing decision: the V4 Phase 3
+classifier, tier snapping, image handling, KV-cache sticky, the operator
+control surface (tier floors/ceilings/pins, scheduled and scoped rules,
+dry-run, rollout ratio), the plaintext-free decision trail, and the
+self-learning corpus.
 
-```bash
-SQUILLA_CENTRAL_TOKEN=<token> \
-SQUILLA_MYSQL_HOST=db-box SQUILLA_MYSQL_USER=squilla \
-SQUILLA_MYSQL_PASSWORD=<password> SQUILLA_MYSQL_DATABASE=squilla_central \
-PYTHONPATH=src python3 services/squilla_central/server.py --host 0.0.0.0 --port 8710
-```
+Deployment, environment variables, the policy rule format, the ops endpoints
+(`/v1/policy`, `/v1/policy/simulate`, `/v1/stats`), and the full architecture —
+including the drawio diagrams — are documented there:
 
-The V4 path needs, on the box:
+- Design doc: `docs/features/squilla-central-routing.md`
+- Service: `services/squilla_central/server.py`
+- Operator control surface: `services/squilla_central/policy.py`
 
-- `opensquilla[recommended]` (numpy / lightgbm / onnxruntime / scikit-learn /
-  joblib), and
-- the Git-LFS model bundle under
-  `opensquilla/squilla_router/models/v4.2_phase3_inference` — run `git lfs pull`
-  (weights are ~40 MB LightGBM + ~24 MB BGE-ONNX).
+Nothing about that surface reaches this plugin. The wire contract is `tier` +
+`decisionId`, so central can gain a whole governance layer — as it has — with
+no change here.
 
-Optional env: `SQUILLA_MYSQL_PORT` (default `3306`), `SQUILLA_DEFAULT_TIER`
-(c0-c3), `SQUILLA_CONFIDENCE_THRESHOLD` (0-1), `SQUILLA_POLICY_VERSION` (stamped
-on every decision for reproducibility), `SQUILLA_STICKY` (`0` disables
-KV-cache sticky), `SQUILLA_STICKY_MAX_USER_LEN` (default `200` — the longest
-turn still treated as a continuation), `SQUILLA_V4_BUNDLE_DIR` (override the
-bundle path), `SQUILLA_V4=0` (force the heuristic — see below),
-`SQUILLA_CAPTURE_FEATURES` (default on), `SQUILLA_CAPTURE_RAW_BGE` (default
-off), `SQUILLA_TIER_BIAS` (see below).
+## This plugin
 
-### Self-learning corpus
-
-Every classified turn stores what offline training actually consumes: the
-390-dim feature vector the heads used, its `feature_schema_version`, the raw
-route class, a per-session `turn_index`, and a `complaint` boolean derived from
-the message (never the message itself). `GET /v1/train/export?tenantId=...`
-emits them in OpenSquilla `RouterTrainSample` shape.
-
-The `complaint` flag is the one that matters most: without it every row aligns
-as `normal` and a retrain just re-learns the model's own output. Watch
-`GET /v1/stats` → `training` (`decisions` / `withFeatures` / `tainted` /
-`complaints` / `trainable`) to see whether the corpus is worth training on.
-
-### Manual tier bias
-
-`SQUILLA_TIER_BIAS` holds JSON rules that reweight the model's tier
-probabilities — e.g. make c3 more likely for one team during business hours:
-
-```json
-[{
-  "name": "team-a-peak",
-  "weights": { "c3": 3.0 },
-  "tenants": ["team-a"],
-  "profiles": ["squilla/auto"],
-  "hours": [1, 10]
-}]
-```
-
-Scope is three independent dimensions, ANDed: `tenants` (matched against the
-request's `tenantId`), `profiles` (the triggering virtual routing id), and
-`hours` (a **UTC** `[start, end)` window that may wrap midnight). Omitting a
-dimension means "any", so a rule with no scope applies everywhere. First match
-wins — put narrow rules before broad ones. UTC rather than local time because
-central may run multi-instance; `[1, 10]` is 09:00–18:00 Beijing time.
-
-The weight is applied as a **shift**: the rule moves the tier by how far it
-moves the argmax, so the model's own postprocess (margin upgrade, under-routing
-safety net) is preserved rather than overwritten.
-
-Any turn a rule actually moves is flagged `tainted` and **excluded from the
-training export** — a manual decision must never come back as a learned label.
-Taint follows the sticky chain, so a turn held on a biased tier is excluded
-too. A rule that matches but does not change the tier leaves the row trainable.
-
-If the V4 model or its deps/bundle are unavailable, the service degrades to its
-own dependency-free band heuristic (recorded in the trail), so routing still
-answers on a fresh box before `git lfs pull`. Snapping and sticky still apply
-on that path — the plugin serves its `defaultTier` only when the central
-service itself is unreachable.
-
-## Design
-
-See [`DESIGN.md`](DESIGN.md) for the full design (architecture, request flow,
-control-plane boundary) and the drawio diagrams under `design/`. All routing
-intelligence — feature assembly, the V4 ensemble, postprocess cascade, tier
-snapping, image handling, and KV-cache sticky — lives in the central service
-(`services/squilla_central/server.py`, ported from OpenSquilla). The plugin
-holds none of it: `router.ts` is a trigger gate plus two lookups, and
-`central-client.ts` is one HTTP call.
+`router.ts` is a trigger gate plus two lookups (`availableTiers`,
+`targetForTier`); `central-client.ts` is one HTTP call; `index.ts` wires them
+to `before_model_resolve`. There is no routing intelligence in any of them, and
+the only offline behavior is serving the profile's `defaultTier` when central
+is unreachable.
