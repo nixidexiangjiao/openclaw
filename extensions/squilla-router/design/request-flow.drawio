@@ -67,7 +67,7 @@
                 <mxCell id="note_degrade" value="V4 不可用 →&#xa;无依赖 band 启发式（照常 snap/粘滞/落库）" style="rounded=1;whiteSpace=wrap;html=1;dashed=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=10;" parent="1" vertex="1">
                     <mxGeometry x="950" y="480" width="185" height="48" as="geometry"/>
                 </mxCell>
-                <mxCell id="c_bias" value="③ 人为 bias：命中规则 → 按加权 argmax 的位移调档&#xa;（保留 postprocess 修正；真改了档 → tainted）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=11;" parent="1" vertex="1">
+                <mxCell id="c_bias" value="③ 人为 bias：按 tenantId + profile + UTC 时间段选规则&#xa;→ 按加权 argmax 的位移调档（保留 postprocess 修正）&#xa;真改了档 → tainted" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=11;" parent="1" vertex="1">
                     <mxGeometry x="650" y="545" width="280" height="46" as="geometry"/>
                 </mxCell>
                 <mxCell id="c_snap" value="④ snap_to_available：落到客户端能服务的档&#xa;缺档向上，不静默降级" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" parent="1" vertex="1">

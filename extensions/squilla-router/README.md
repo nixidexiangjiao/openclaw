@@ -175,17 +175,28 @@ as `normal` and a retrain just re-learns the model's own output. Watch
 ### Manual tier bias
 
 `SQUILLA_TIER_BIAS` holds JSON rules that reweight the model's tier
-probabilities — e.g. make c3 more likely during business hours:
+probabilities — e.g. make c3 more likely for one team during business hours:
 
 ```json
-[{ "name": "peak-c3", "weights": { "c3": 3.0 }, "hours": [1, 10] }]
+[{
+  "name": "team-a-peak",
+  "weights": { "c3": 3.0 },
+  "tenants": ["team-a"],
+  "profiles": ["squilla/auto"],
+  "hours": [1, 10]
+}]
 ```
 
-`hours` is a UTC `[start, end)` window (may wrap midnight); `profiles` scopes a
-rule to specific virtual ids; first match wins. The weight is applied as a
-**shift**: the rule moves the tier by how far it moves the argmax, so the
-model's own postprocess (margin upgrade, under-routing safety net) is preserved
-rather than overwritten.
+Scope is three independent dimensions, ANDed: `tenants` (matched against the
+request's `tenantId`), `profiles` (the triggering virtual routing id), and
+`hours` (a **UTC** `[start, end)` window that may wrap midnight). Omitting a
+dimension means "any", so a rule with no scope applies everywhere. First match
+wins — put narrow rules before broad ones. UTC rather than local time because
+central may run multi-instance; `[1, 10]` is 09:00–18:00 Beijing time.
+
+The weight is applied as a **shift**: the rule moves the tier by how far it
+moves the argmax, so the model's own postprocess (margin upgrade, under-routing
+safety net) is preserved rather than overwritten.
 
 Any turn a rule actually moves is flagged `tainted` and **excluded from the
 training export** — a manual decision must never come back as a learned label.

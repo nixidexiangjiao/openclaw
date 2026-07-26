@@ -52,7 +52,7 @@
                 <mxCell id="s_gate" value="分类器不可用时降级：无依赖 band 启发式" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#82b366;fontSize=11;" parent="1" vertex="1">
                     <mxGeometry x="490" y="316" width="360" height="30" as="geometry"/>
                 </mxCell>
-                <mxCell id="s_bias" value="② 人为 bias（SQUILLA_TIER_BIAS）：按加权 argmax 的位移调档&#xa;真改了档 → tainted=1（该轮不进训练集）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=11;" parent="1" vertex="1">
+                <mxCell id="s_bias" value="② 人为 bias（SQUILLA_TIER_BIAS）：按 tenantId + profile + UTC 时间段命中规则&#xa;按加权 argmax 的位移调档；真改了档 → tainted=1（该轮不进训练集）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=11;" parent="1" vertex="1">
                     <mxGeometry x="490" y="352" width="360" height="42" as="geometry"/>
                 </mxCell>
                 <mxCell id="s_snap" value="③ snap：落到客户端 availableTiers（缺档向上，不静默降级）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#82b366;fontSize=11;" parent="1" vertex="1">
